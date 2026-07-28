@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { ClipboardList, ArrowRight, Sparkles, CheckCircle2 } from 'lucide-react';
-import { ProcessData } from '../types/process';
+import { ProcessData, ExportCategory } from '../types/process';
 import { ProcessStorageService } from '../services/storage';
 
 interface ProcessFormScreenProps {
@@ -31,15 +31,17 @@ export const ProcessFormScreen: React.FC<ProcessFormScreenProps> = ({
 
   const handleAutoFillDemo = () => {
     const mock = ProcessStorageService.createInitialProcess({
-      processNumber: `PROC-2026-${Math.floor(100 + Math.random() * 900)}`,
-      variety: 'Cherry Royal Dawn',
-      producerCode: 'PR-8840',
-      producerName: 'Agrícola Santa Laura',
-      csg: '083419',
-      sdp: 'SDP-04',
+      processNumber: `PROC-NAR-${Math.floor(1000 + Math.random() * 9000)}`,
+      species: 'Naranja',
+      variety: 'Fukumoto',
+      exportCategory: 'EXTRA-FANCY',
+      producerCode: 'P-9920',
+      producerName: 'Agrícola Los Naranjos',
+      csg: '104820',
+      sdp: 'SDP-02',
       receptionDate: new Date().toISOString().split('T')[0],
-      lot: 'LOTE-MAIPO-02',
-      totalKg: 18450
+      lot: 'LOTE-NAR-04',
+      totalKg: 24500
     });
     setFormData(mock);
     setErrors({});
@@ -50,6 +52,7 @@ export const ProcessFormScreen: React.FC<ProcessFormScreenProps> = ({
     const newErrors: Record<string, string> = {};
 
     if (!formData.processNumber?.trim()) newErrors.processNumber = 'Requerido';
+    if (!formData.species?.trim()) newErrors.species = 'Requerido';
     if (!formData.variety?.trim()) newErrors.variety = 'Requerido';
     if (!formData.producerCode?.trim()) newErrors.producerCode = 'Requerido';
     if (!formData.producerName?.trim()) newErrors.producerName = 'Requerido';
@@ -67,7 +70,9 @@ export const ProcessFormScreen: React.FC<ProcessFormScreenProps> = ({
     const completedProcess: ProcessData = {
       id: formData.id || crypto.randomUUID(),
       processNumber: formData.processNumber!,
+      species: formData.species || 'Naranja',
       variety: formData.variety!,
+      exportCategory: (formData.exportCategory as ExportCategory) || 'EXTRA-FANCY',
       producerCode: formData.producerCode!,
       producerName: formData.producerName!,
       csg: formData.csg!,
@@ -93,7 +98,7 @@ export const ProcessFormScreen: React.FC<ProcessFormScreenProps> = ({
             <h2 style={{ fontSize: '1.4rem', fontWeight: 800, color: 'white' }}>Datos del Proceso</h2>
           </div>
           <p style={{ fontSize: '0.85rem', color: '#94A3B8', marginTop: '4px' }}>
-            Pantalla 1: Formulario inicial de recepción frutícola
+            Pantalla 1: Datos de Recepción e Inspección (Norma Naranja FRUSTOCK)
           </p>
         </div>
 
@@ -104,7 +109,7 @@ export const ProcessFormScreen: React.FC<ProcessFormScreenProps> = ({
           title="Autocompletar formulario con datos de ejemplo"
         >
           <Sparkles size={16} color="#F59E0B" />
-          <span>Ejemplo Demo</span>
+          <span>Ejemplo Demo Naranja</span>
         </button>
       </div>
 
@@ -116,24 +121,56 @@ export const ProcessFormScreen: React.FC<ProcessFormScreenProps> = ({
             <input
               type="text"
               className="form-input"
-              placeholder="Ej. PROC-2026-089"
+              placeholder="Ej. PROC-NAR-2026-089"
               value={formData.processNumber || ''}
               onChange={e => handleChange('processNumber', e.target.value)}
             />
             {errors.processNumber && <span style={{ color: '#EF4444', fontSize: '0.75rem', marginTop: '4px', display: 'block' }}>{errors.processNumber}</span>}
           </div>
 
+          {/* Especie */}
+          <div className="form-group">
+            <label className="form-label">Especie Frutícola *</label>
+            <select
+              className="form-select"
+              value={formData.species || 'Naranja'}
+              onChange={e => handleChange('species', e.target.value)}
+            >
+              <option value="Naranja">🍊 Naranja (Norma Técnica 4.2 / 4.3)</option>
+              <option value="Mandarina">🍊 Mandarina / Clementina</option>
+              <option value="Limón">🍋 Limón</option>
+              <option value="Cereza">🍒 Cereza</option>
+              <option value="Palta">🥑 Palta</option>
+            </select>
+          </div>
+        </div>
+
+        <div className="grid-2">
           {/* Variedad */}
           <div className="form-group">
-            <label className="form-label">Variedad de Fruta *</label>
+            <label className="form-label">Variedad *</label>
             <input
               type="text"
               className="form-input"
-              placeholder="Ej. Royal Dawn, Lapins, Hass"
+              placeholder="Ej. Fukumoto, Lane Late, Cara Cara, Navel"
               value={formData.variety || ''}
               onChange={e => handleChange('variety', e.target.value)}
             />
             {errors.variety && <span style={{ color: '#EF4444', fontSize: '0.75rem', marginTop: '4px', display: 'block' }}>{errors.variety}</span>}
+          </div>
+
+          {/* Categoría de Exportación */}
+          <div className="form-group">
+            <label className="form-label">Categoría de Embalaje *</label>
+            <select
+              className="form-select"
+              value={formData.exportCategory || 'EXTRA-FANCY'}
+              onChange={e => handleChange('exportCategory', e.target.value)}
+              style={{ fontWeight: 800, color: formData.exportCategory === 'EXTRA-FANCY' ? '#34D399' : '#F59E0B' }}
+            >
+              <option value="EXTRA-FANCY">⭐ EXTRA-FANCY (Tolerancia Total 10%)</option>
+              <option value="FANCY">🏷️ FANCY (Tolerancia Total 12%)</option>
+            </select>
           </div>
         </div>
 
@@ -144,7 +181,7 @@ export const ProcessFormScreen: React.FC<ProcessFormScreenProps> = ({
             <input
               type="text"
               className="form-input"
-              placeholder="Ej. P-402"
+              placeholder="Ej. P-8820"
               value={formData.producerCode || ''}
               onChange={e => handleChange('producerCode', e.target.value)}
             />
@@ -157,7 +194,7 @@ export const ProcessFormScreen: React.FC<ProcessFormScreenProps> = ({
             <input
               type="text"
               className="form-input"
-              placeholder="Ej. Agrícola Valle Central"
+              placeholder="Ej. Agrícola San Fernando"
               value={formData.producerName || ''}
               onChange={e => handleChange('producerName', e.target.value)}
             />
@@ -172,7 +209,7 @@ export const ProcessFormScreen: React.FC<ProcessFormScreenProps> = ({
             <input
               type="text"
               className="form-input"
-              placeholder="Ej. 123456"
+              placeholder="Ej. 104820"
               value={formData.csg || ''}
               onChange={e => handleChange('csg', e.target.value)}
             />
@@ -181,11 +218,11 @@ export const ProcessFormScreen: React.FC<ProcessFormScreenProps> = ({
 
           {/* SDP */}
           <div className="form-group">
-            <label className="form-label">SDP (Sitio de Inspección) *</label>
+            <label className="form-label">SDP (Sitio Inspección) *</label>
             <input
               type="text"
               className="form-input"
-              placeholder="Ej. SDP-01"
+              placeholder="Ej. SDP-02"
               value={formData.sdp || ''}
               onChange={e => handleChange('sdp', e.target.value)}
             />
@@ -212,7 +249,7 @@ export const ProcessFormScreen: React.FC<ProcessFormScreenProps> = ({
             <input
               type="text"
               className="form-input"
-              placeholder="Ej. LOTE-2026-A"
+              placeholder="Ej. LOTE-NAR-04"
               value={formData.lot || ''}
               onChange={e => handleChange('lot', e.target.value)}
             />
@@ -225,7 +262,7 @@ export const ProcessFormScreen: React.FC<ProcessFormScreenProps> = ({
             <input
               type="number"
               className="form-input"
-              placeholder="Ej. 12500"
+              placeholder="Ej. 24500"
               value={formData.totalKg || ''}
               onChange={e => handleChange('totalKg', e.target.value)}
             />

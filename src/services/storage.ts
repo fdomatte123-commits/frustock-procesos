@@ -80,31 +80,33 @@ export class ProcessStorageService {
       } else {
         history.unshift(process);
       }
-      localStorage.setItem(HISTORY_KEY, JSON.stringify(history.slice(0, 20))); // Keep last 20 processes
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(history.slice(0, 20)));
     } catch (e) {
       console.error('Error saving history:', e);
     }
   }
 
   /**
-   * Create new default empty process
+   * Create new default empty process for Naranja
    */
   static createInitialProcess(override: Partial<ProcessData> = {}): ProcessData {
     const now = new Date();
     const dateStr = now.toISOString().split('T')[0];
-    const defaultNum = `PROC-${now.getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
+    const defaultNum = `PROC-NAR-${now.getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
 
     return {
       id: crypto.randomUUID(),
       processNumber: override.processNumber || defaultNum,
-      variety: override.variety || 'Royal Dawn',
-      producerCode: override.producerCode || 'P-402',
-      producerName: override.producerName || 'Agrícola Valle Central',
-      csg: override.csg || '123456',
-      sdp: override.sdp || 'SDP-01',
+      species: override.species || 'Naranja',
+      variety: override.variety || 'Fukumoto',
+      exportCategory: override.exportCategory || 'EXTRA-FANCY',
+      producerCode: override.producerCode || 'P-8820',
+      producerName: override.producerName || 'Agrícola San Fernando',
+      csg: override.csg || '104820',
+      sdp: override.sdp || 'SDP-02',
       receptionDate: override.receptionDate || dateStr,
-      lot: override.lot || `LOTE-${now.getMonth() + 1}${now.getDate()}`,
-      totalKg: override.totalKg || 12500,
+      lot: override.lot || `LOTE-NAR-${now.getMonth() + 1}${now.getDate()}`,
+      totalKg: override.totalKg || 22000,
       createdAt: now.toISOString(),
       updatedAt: now.toISOString(),
       boxes: []

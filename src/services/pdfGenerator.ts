@@ -5,20 +5,18 @@ import { ProcessData } from '../types/process';
 export class PDFReportGenerator {
   /**
    * Generates a PDF report enforcing exactly 1 page per sampled box.
-   * If a process has N boxes, the resulting PDF will have N pages.
    */
   static async generateProcessPDF(process: ProcessData, onProgress?: (percent: number) => void): Promise<void> {
     if (!process.boxes || process.boxes.length === 0) {
       throw new Error('No hay cajas muestreadas para generar el informe PDF.');
     }
 
-    // Create a temporary hidden container element in DOM for rendering PDF pages
     const renderContainer = document.createElement('div');
     renderContainer.id = 'frustock-pdf-render-container';
     renderContainer.style.position = 'absolute';
     renderContainer.style.left = '-9999px';
     renderContainer.style.top = '-9999px';
-    renderContainer.style.width = '794px'; // A4 width at 96 DPI
+    renderContainer.style.width = '794px';
     document.body.appendChild(renderContainer);
 
     const doc = new jsPDF({
@@ -36,13 +34,11 @@ export class PDFReportGenerator {
           onProgress(Math.round(((index + 1) / totalBoxes) * 100));
         }
 
-        // Render HTML for this specific box (1 Page)
         renderContainer.innerHTML = this.buildSingleBoxPageHTML(process, box, index + 1, totalBoxes);
 
-        // Capture page as high-res canvas
         const pageElement = renderContainer.firstElementChild as HTMLElement;
         const canvas = await html2canvas(pageElement, {
-          scale: 2, // High resolution crisp text & photos
+          scale: 2,
           useCORS: true,
           logging: false,
           backgroundColor: '#FFFFFF',
@@ -56,165 +52,180 @@ export class PDFReportGenerator {
           doc.addPage('a4', 'portrait');
         }
 
-        // Add to PDF (A4 dimensions: 210mm x 297mm)
         doc.addImage(imgData, 'JPEG', 0, 0, 210, 297);
       }
 
-      // Save output
-      const fileName = `FRUSTOCK_Reporte_${process.processNumber}_${new Date().toISOString().split('T')[0]}.pdf`;
+      const fileName = `FRUSTOCK_Naranja_${process.processNumber}_${new Date().toISOString().split('T')[0]}.pdf`;
       doc.save(fileName);
     } finally {
-      // Clean up DOM container
       if (document.body.contains(renderContainer)) {
         document.body.removeChild(renderContainer);
       }
     }
   }
 
-  /**
-   * Builds pixel-perfect A4 page HTML for a single box.
-   */
   private static buildSingleBoxPageHTML(
     process: ProcessData,
     box: typeof process.boxes[0],
     pageIndex: number,
     totalPages: number
   ): string {
-    const graveCount = box.defects.filter(d => d.category === 'grave').length;
-    const medioCount = box.defects.filter(d => d.category === 'medio').length;
-    const leveCount = box.defects.filter(d => d.category === 'leve').length;
-
-    const photosHTML = box.photos && box.photos.length > 0
-      ? box.photos.map((src, i) => `
-          <div style="flex: 1; min-width: 45%; max-width: 50%; height: 190px; border-radius: 8px; overflow: hidden; border: 1px solid #E2E8F0; background: #F8FAFC; text-align: center; display: flex; align-items: center; justify-content: center;">
-            <img src="${src}" style="width: 100%; height: 100%; object-fit: cover;" alt="Foto caja ${i + 1}" />
-          </div>
-        `).join('')
-      : `
-        <div style="width: 100%; height: 140px; border: 2px dashed #CBD5E1; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: #94A3B8; font-size: 13px; font-weight: 500;">
-          Sin fotografías registradas para esta caja
-        </div>
-      `;
+    const isApproved = box.status === 'APROBADA';
+    const statusBg = isApproved ? '#D1FAE5' : '#FEE2E2';
+    const statusColor = isApproved ? '#065F46' : '#991B1B';
+    const statusBorder = isApproved ? '#10B981' : '#EF4444';
 
     const defectsRows = box.defects && box.defects.length > 0
       ? box.defects.map(d => {
+          const isExceeded = d.countOrPercentage > (process.exportCategory === 'EXTRA-FANCY' ? d.toleranceExtraFancy : d.toleranceFancy);
           const badgeBg = d.category === 'grave' ? '#FEE2E2' : d.category === 'medio' ? '#FEF3C7' : '#ECFDF5';
           const badgeColor = d.category === 'grave' ? '#991B1B' : d.category === 'medio' ? '#92400E' : '#065F46';
-          const catLabel = d.category === 'grave' ? 'GRAVE' : d.category === 'medio' ? 'MEDIO' : 'LEVE';
 
           return `
-            <tr style="border-bottom: 1px solid #F1F5F9;">
-              <td style="padding: 10px 12px; font-weight: 600; color: #1E293B;">${d.name}</td>
-              <td style="padding: 10px 12px; text-align: center;">
-                <span style="background: ${badgeBg}; color: ${badgeColor}; padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; text-transform: uppercase;">
-                  ${catLabel}
+            <tr style="border-bottom: 1px solid #F1F5F9; background: ${isExceeded ? '#FEF2F2' : 'transparent'};">
+              <td style="padding: 9px 12px; font-weight: 600; color: #1E293B;">
+                ${d.name} ${isExceeded ? '<span style="color:#DC2626; font-size:10px; font-weight:800;">[EXCEDE TOLERANCIA]</span>' : ''}
+              </td>
+              <td style="padding: 9px 12px; text-align: center;">
+                <span style="background: ${badgeBg}; color: ${badgeColor}; padding: 2px 8px; border-radius: 4px; font-size: 10px; font-weight: 700; text-transform: uppercase;">
+                  ${d.type} / ${d.category}
                 </span>
               </td>
-              <td style="padding: 10px 12px; text-align: right; font-weight: 700; color: #0F172A;">
-                ${d.countOrPercentage} ${d.unit}
+              <td style="padding: 9px 12px; text-align: right; font-weight: 800; color: ${isExceeded ? '#DC2626' : '#0F172A'}; font-size: 13px;">
+                ${d.countOrPercentage} %
               </td>
             </tr>
           `;
         }).join('')
       : `
         <tr>
-          <td colspan="3" style="padding: 18px; text-align: center; color: #059669; font-weight: 600; background: #F0FDF4; border-radius: 6px;">
+          <td colspan="3" style="padding: 16px; text-align: center; color: #059669; font-weight: 600; background: #F0FDF4; border-radius: 6px;">
             ✓ Sin defectos registrados en este muestreo
           </td>
         </tr>
       `;
 
+    const photosHTML = box.photos && box.photos.length > 0
+      ? box.photos.map((src, i) => `
+          <div style="flex: 1; min-width: 45%; max-width: 50%; height: 180px; border-radius: 8px; overflow: hidden; border: 1px solid #E2E8F0; background: #F8FAFC; text-align: center;">
+            <img src="${src}" style="width: 100%; height: 100%; object-fit: cover;" alt="Foto ${i + 1}" />
+          </div>
+        `).join('')
+      : `
+        <div style="width: 100%; height: 120px; border: 2px dashed #CBD5E1; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: #94A3B8; font-size: 12px;">
+          Sin registro fotográfico en esta caja
+        </div>
+      `;
+
+    const statusReasonsHTML = box.statusReasons && box.statusReasons.length > 0
+      ? `
+        <div style="background: #FEF2F2; border: 1px solid #FCA5A5; border-radius: 6px; padding: 8px 12px; margin-top: 8px; font-size: 11px; color: #991B1B;">
+          <strong>Causa de Objetación:</strong>
+          <ul style="margin: 4px 0 0 16px; padding: 0;">
+            ${box.statusReasons.map(r => `<li>${r}</li>`).join('')}
+          </ul>
+        </div>
+      `
+      : '';
+
     return `
-      <div style="width: 794px; height: 1123px; padding: 32px; box-sizing: border-box; background: #FFFFFF; font-family: 'Plus Jakarta Sans', sans-serif; display: flex; flex-direction: column; justify-content: space-between; color: #0F172A;">
+      <div style="width: 794px; height: 1123px; padding: 30px; box-sizing: border-box; background: #FFFFFF; font-family: 'Plus Jakarta Sans', sans-serif; display: flex; flex-direction: column; justify-content: space-between; color: #0F172A;">
         
-        <!-- HEADER DE LA PÁGINA / MARCA Y PROCESO -->
         <div>
-          <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 3px solid #059669; padding-bottom: 16px; margin-bottom: 20px;">
+          <!-- HEADER CORPORATIVO -->
+          <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 3px solid #F59E0B; padding-bottom: 14px; margin-bottom: 16px;">
             <div>
               <div style="display: flex; align-items: center; gap: 8px;">
-                <div style="background: #059669; color: white; font-weight: 800; font-size: 18px; padding: 4px 10px; border-radius: 6px; font-family: 'Outfit', sans-serif;">FRUSTOCK</div>
-                <span style="font-size: 14px; font-weight: 700; color: #475569; letter-spacing: 0.5px;">PROCESOS • INFORME DE MUESTREO</span>
+                <div style="background: #F59E0B; color: white; font-weight: 800; font-size: 17px; padding: 4px 10px; border-radius: 6px; font-family: 'Outfit', sans-serif;">FRUSTOCK</div>
+                <span style="font-size: 13px; font-weight: 800; color: #334155; letter-spacing: 0.5px;">PROCESOS • INFORME NARANJA</span>
               </div>
-              <div style="font-size: 12px; color: #64748B; margin-top: 4px;">Control de Calidad en Planta de Empaque</div>
+              <div style="font-size: 11px; color: #64748B; margin-top: 3px;">Control de Calidad Packing según Norma 4.2 / 4.3</div>
             </div>
             <div style="text-align: right;">
-              <div style="background: #0F291E; color: #34D399; font-size: 12px; font-weight: 700; padding: 4px 12px; border-radius: 20px; display: inline-block;">
+              <div style="background: #0F291E; color: #34D399; font-size: 11px; font-weight: 700; padding: 4px 12px; border-radius: 20px; display: inline-block;">
                 PÁGINA ${pageIndex} DE ${totalPages}
               </div>
-              <div style="font-size: 11px; color: #94A3B8; margin-top: 4px;">Fecha emisión: ${new Date().toLocaleDateString('es-ES')}</div>
+              <div style="font-size: 10px; color: #94A3B8; margin-top: 3px;">Fecha: ${new Date().toLocaleDateString('es-ES')}</div>
             </div>
           </div>
 
-          <!-- FICHA TÉCNICA DEL PROCESO -->
-          <div style="background: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 10px; padding: 14px; margin-bottom: 20px;">
-            <div style="font-size: 11px; font-weight: 800; color: #059669; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 10px; border-bottom: 1px solid #E2E8F0; padding-bottom: 4px;">
-              Datos Generales del Proceso
-            </div>
-            <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; font-size: 12px;">
+          <!-- DATOS DEL PROCESO -->
+          <div style="background: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 8px; padding: 12px; margin-bottom: 16px;">
+            <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; font-size: 11px;">
               <div>
-                <span style="color: #64748B; display: block; font-size: 10px; text-transform: uppercase;">N° Proceso</span>
-                <strong style="color: #0F172A; font-size: 13px;">${process.processNumber}</strong>
+                <span style="color: #64748B; font-size: 9px; text-transform: uppercase;">N° Proceso</span>
+                <strong style="color: #0F172A; display: block;">${process.processNumber}</strong>
               </div>
               <div>
-                <span style="color: #64748B; display: block; font-size: 10px; text-transform: uppercase;">Variedad</span>
-                <strong style="color: #059669; font-size: 13px;">${process.variety}</strong>
+                <span style="color: #64748B; font-size: 9px; text-transform: uppercase;">Variedad / Especie</span>
+                <strong style="color: #D97706; display: block;">${process.variety} (${process.species || 'Naranja'})</strong>
               </div>
               <div>
-                <span style="color: #64748B; display: block; font-size: 10px; text-transform: uppercase;">Productor</span>
-                <strong style="color: #0F172A; font-size: 13px;">${process.producerName} (${process.producerCode})</strong>
+                <span style="color: #64748B; font-size: 9px; text-transform: uppercase;">Categoría</span>
+                <strong style="color: #059669; display: block;">${process.exportCategory}</strong>
               </div>
               <div>
-                <span style="color: #64748B; display: block; font-size: 10px; text-transform: uppercase;">CSG / SDP</span>
-                <strong style="color: #0F172A;">CSG: ${process.csg} | SDP: ${process.sdp}</strong>
+                <span style="color: #64748B; font-size: 9px; text-transform: uppercase;">Productor</span>
+                <strong style="color: #0F172A; display: block;">${process.producerName} (${process.producerCode})</strong>
               </div>
               <div>
-                <span style="color: #64748B; display: block; font-size: 10px; text-transform: uppercase;">Lote / Recept.</span>
-                <strong style="color: #0F172A;">${process.lot} (${process.receptionDate})</strong>
+                <span style="color: #64748B; font-size: 9px; text-transform: uppercase;">CSG / SDP</span>
+                <strong style="color: #0F172A; display: block;">CSG: ${process.csg} | SDP: ${process.sdp}</strong>
               </div>
               <div>
-                <span style="color: #64748B; display: block; font-size: 10px; text-transform: uppercase;">Total Kilos</span>
-                <strong style="color: #0F172A;">${process.totalKg.toLocaleString()} Kg</strong>
+                <span style="color: #64748B; font-size: 9px; text-transform: uppercase;">Lote / Fecha</span>
+                <strong style="color: #0F172A; display: block;">${process.lot} (${process.receptionDate})</strong>
+              </div>
+              <div>
+                <span style="color: #64748B; font-size: 9px; text-transform: uppercase;">Kg Totales</span>
+                <strong style="color: #0F172A; display: block;">${process.totalKg.toLocaleString()} Kg</strong>
               </div>
             </div>
           </div>
 
-          <!-- DETALLE ESPECÍFICO DE LA CAJA -->
-          <div style="background: #FFFFFF; border: 2px solid #059669; border-radius: 12px; padding: 18px; margin-bottom: 20px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);">
-            <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #F1F5F9; padding-bottom: 12px; margin-bottom: 14px;">
+          <!-- DETALLE CAJA EVALUADA Y BADGE DE ESTADO -->
+          <div style="background: #FFFFFF; border: 2px solid ${statusBorder}; border-radius: 10px; padding: 16px; margin-bottom: 16px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #F1F5F9; padding-bottom: 10px; margin-bottom: 12px;">
               <div>
-                <span style="background: #D1FAE5; color: #065F46; font-size: 12px; font-weight: 800; padding: 4px 10px; border-radius: 6px; text-transform: uppercase;">
-                  MUESTREO DE CAJA
+                <span style="font-size: 11px; font-weight: 800; color: #64748B; text-transform: uppercase;">
+                  INSPECCIÓN CAJA MUESTRA N° ${box.boxNumber}
                 </span>
-                <h2 style="margin: 6px 0 0 0; font-size: 22px; font-weight: 800; color: #0F172A; font-family: 'Outfit', sans-serif;">
-                  CAJA MUESTRA N° ${box.boxNumber}
-                </h2>
+                <div style="display: flex; align-items: center; gap: 12px; margin-top: 4px;">
+                  <h2 style="margin: 0; font-size: 20px; font-weight: 800; color: #0F172A;">
+                    ${box.caliber}
+                  </h2>
+                  <span style="font-size: 12px; color: #475569; background: #F1F5F9; padding: 2px 8px; border-radius: 4px; font-weight: 600;">
+                    Diámetro: ${box.diameterMm || 'N/A'} | Peso: ${box.weightGr || 'N/A'}
+                  </span>
+                </div>
               </div>
 
-              <div style="text-align: right;">
-                <div style="font-size: 10px; color: #64748B; font-weight: 700; text-transform: uppercase;">Calibre Evaluado</div>
-                <div style="font-size: 20px; font-weight: 800; color: #059669; background: #F0FDF4; border: 1px solid #A7F3D0; padding: 4px 16px; border-radius: 8px; display: inline-block; margin-top: 2px;">
-                  ${box.caliber}
-                </div>
+              <!-- STATUS BADGE (APROBADA / OBJETADA) -->
+              <div style="background: ${statusBg}; border: 1.5px solid ${statusBorder}; color: ${statusColor}; font-size: 15px; font-weight: 800; padding: 6px 18px; border-radius: 20px; text-transform: uppercase;">
+                CAJA ${box.status}
               </div>
             </div>
 
-            <!-- TABLA DE DEFECTOS REGISTRADOS -->
-            <div style="margin-bottom: 16px;">
-              <div style="font-size: 12px; font-weight: 700; color: #334155; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
-                <span>RESUMEN DE DEFECTOS DETECTADOS</span>
-                <div style="font-size: 11px; font-weight: 600;">
-                  <span style="color: #DC2626; margin-right: 8px;">● Graves: ${graveCount}</span>
-                  <span style="color: #D97706; margin-right: 8px;">● Medios: ${medioCount}</span>
-                  <span style="color: #059669;">● Leves: ${leveCount}</span>
-                </div>
-              </div>
+            ${statusReasonsHTML}
 
-              <table style="width: 100%; border-collapse: collapse; font-size: 12px; background: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 8px; overflow: hidden;">
+            <!-- COLOR GRADE -->
+            ${box.colorName ? `
+              <div style="margin-top: 10px; margin-bottom: 12px; font-size: 11px; background: #FFFBEB; border: 1px solid #FDE68A; padding: 6px 10px; border-radius: 6px; color: #92400E;">
+                <strong>Evaluación de Color (Tabla 5.1.1):</strong> Grado ${box.colorGrade} - ${box.colorName}
+              </div>
+            ` : ''}
+
+            <!-- DEFECTOS TABLA -->
+            <div>
+              <div style="font-size: 11px; font-weight: 700; color: #475569; margin-bottom: 6px; text-transform: uppercase;">
+                Desglose de Defectos (Tabla 4.3)
+              </div>
+              <table style="width: 100%; border-collapse: collapse; font-size: 11px; background: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 6px; overflow: hidden;">
                 <thead>
-                  <tr style="background: #F1F5F9; color: #475569; font-size: 11px; text-transform: uppercase; text-align: left;">
-                    <th style="padding: 8px 12px;">Defecto / Desviación</th>
-                    <th style="padding: 8px 12px; text-align: center;">Severidad</th>
-                    <th style="padding: 8px 12px; text-align: right;">Cantidad / Impacto</th>
+                  <tr style="background: #F1F5F9; color: #475569; font-size: 10px; text-transform: uppercase; text-align: left;">
+                    <th style="padding: 7px 10px;">Defecto / Problema</th>
+                    <th style="padding: 7px 10px; text-align: center;">Tipo / Severidad</th>
+                    <th style="padding: 7px 10px; text-align: right;">% Muestra</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -223,36 +234,36 @@ export class PDFReportGenerator {
               </table>
             </div>
 
-            <!-- SECCIÓN DE OBSERVACIONES -->
-            <div style="background: #F8FAFC; border: 1px dashed #CBD5E1; border-radius: 8px; padding: 10px 14px;">
-              <span style="font-size: 10px; font-weight: 700; color: #64748B; text-transform: uppercase;">Observaciones del Inspector:</span>
-              <p style="margin: 4px 0 0 0; font-size: 12px; color: #334155; font-style: ${box.notes ? 'normal' : 'italic'};">
-                ${box.notes || 'Sin observaciones adicionales registradas.'}
+            <!-- OBSERVACIONES -->
+            <div style="background: #F8FAFC; border: 1px dashed #CBD5E1; border-radius: 6px; padding: 8px 12px; margin-top: 12px;">
+              <span style="font-size: 9px; font-weight: 700; color: #64748B; text-transform: uppercase;">Observaciones del Inspector:</span>
+              <p style="margin: 2px 0 0 0; font-size: 11px; color: #334155;">
+                ${box.notes || 'Sin observaciones adicionales.'}
               </p>
             </div>
           </div>
 
-          <!-- REGISTRO FOTOGRÁFICO DE LA CAJA -->
+          <!-- REGISTRO FOTOGRÁFICO -->
           <div>
-            <div style="font-size: 12px; font-weight: 700; color: #334155; margin-bottom: 8px;">
-              REGISTRO FOTOGRÁFICO DE LA CAJA Y FRUTA
+            <div style="font-size: 11px; font-weight: 700; color: #475569; margin-bottom: 6px; text-transform: uppercase;">
+              Evidencia Fotográfica de la Caja
             </div>
-            <div style="display: flex; gap: 14px; justify-content: space-between;">
+            <div style="display: flex; gap: 12px; justify-content: space-between;">
               ${photosHTML}
             </div>
           </div>
         </div>
 
-        <!-- FOOTER FIRMA E INSPECCIÓN -->
-        <div style="border-top: 1px solid #E2E8F0; padding-top: 16px; margin-top: 20px; display: flex; justify-content: space-between; align-items: flex-end;">
+        <!-- FOOTER FIRMA -->
+        <div style="border-top: 1px solid #E2E8F0; padding-top: 12px; margin-top: 16px; display: flex; justify-content: space-between; align-items: flex-end;">
           <div>
-            <div style="font-size: 10px; color: #64748B;">Hora de registro: ${new Date(box.timestamp).toLocaleString('es-ES')}</div>
-            <div style="font-size: 10px; color: #94A3B8; margin-top: 2px;">Sistema de Control de Calidad FRUSTOCK Procesos</div>
+            <div style="font-size: 9px; color: #64748B;">Registro: ${new Date(box.timestamp).toLocaleString('es-ES')}</div>
+            <div style="font-size: 9px; color: #94A3B8; margin-top: 1px;">Control de Calidad FRUSTOCK Procesos • Norma Naranja</div>
           </div>
 
-          <div style="text-align: center; width: 200px;">
-            <div style="border-bottom: 1px solid #94A3B8; height: 35px; margin-bottom: 4px;"></div>
-            <div style="font-size: 10px; font-weight: 700; color: #334155;">Firma Inspector de Calidad</div>
+          <div style="text-align: center; width: 180px;">
+            <div style="border-bottom: 1px solid #94A3B8; height: 30px; margin-bottom: 3px;"></div>
+            <div style="font-size: 9px; font-weight: 700; color: #334155;">Firma Inspector de Calidad</div>
           </div>
         </div>
 
