@@ -28,6 +28,17 @@ export const App: React.FC = () => {
     setActiveProcess(updated);
   };
 
+  // Iniciar un proceso nuevo desde cero (borra el activo local)
+  const handleNewProcess = () => {
+    if (activeProcess && activeProcess.boxes.length > 0) {
+      const ok = window.confirm('¿Iniciar un proceso nuevo? Asegúrate de haber generado el PDF: los datos del proceso actual se borrarán de este dispositivo.');
+      if (!ok) return;
+    }
+    ProcessStorageService.clearCurrentProcess();
+    setActiveProcess(null);
+    setCurrentStep('form');
+  };
+
   // Phase 2 Roadmap: Simulated QR Code Scan Handler
   const handleSimulateQRScan = () => {
     const mockQRRaw = "FRUSTOCK|CAL:Calibre 56|LOT:LOTE-2026-QR|PROD:PR-9900|SN:TAG-88219";
@@ -48,6 +59,7 @@ export const App: React.FC = () => {
         onSelectStep={(step) => setCurrentStep(step)}
         activeProcess={activeProcess}
         onSimulateQRScan={handleSimulateQRScan}
+        onNewProcess={handleNewProcess}
       />
 
       <main className="content-wrapper">

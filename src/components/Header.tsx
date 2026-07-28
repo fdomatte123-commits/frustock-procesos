@@ -1,5 +1,5 @@
 import React from 'react';
-import { ClipboardList, Box, FileText, QrCode } from 'lucide-react';
+import { ClipboardList, Box, FileText, QrCode, FilePlus2 } from 'lucide-react';
 import { ProcessData } from '../types/process';
 
 interface HeaderProps {
@@ -7,13 +7,15 @@ interface HeaderProps {
   onSelectStep: (step: 'form' | 'sampling' | 'summary') => void;
   activeProcess: ProcessData | null;
   onSimulateQRScan: () => void;
+  onNewProcess: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
   currentStep,
   onSelectStep,
   activeProcess,
-  onSimulateQRScan
+  onSimulateQRScan,
+  onNewProcess
 }) => {
   const boxCount = activeProcess?.boxes ? activeProcess.boxes.length : 0;
 
@@ -29,6 +31,16 @@ export const Header: React.FC<HeaderProps> = ({
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          {/* Nuevo Proceso */}
+          <button
+            onClick={onNewProcess}
+            title="Iniciar un proceso nuevo"
+            style={{ background: 'rgba(245, 158, 11, 0.15)', border: '1px solid #F59E0B', color: '#F59E0B', padding: '8px 12px', borderRadius: '8px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.8rem', fontWeight: 700 }}
+          >
+            <FilePlus2 size={16} />
+            <span className="hide-mobile">Nuevo</span>
+          </button>
+
           {/* QR Scanner Roadmap Button (Phase 2) */}
           <button
             onClick={onSimulateQRScan}

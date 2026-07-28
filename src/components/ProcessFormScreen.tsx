@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { ClipboardList, ArrowRight, Sparkles, CheckCircle2 } from 'lucide-react';
-import { ProcessData, ExportCategory } from '../types/process';
+import { ProcessData, ExportCategory, Species } from '../types/process';
 import { ProcessStorageService } from '../services/storage';
 
 interface ProcessFormScreenProps {
@@ -32,7 +32,7 @@ export const ProcessFormScreen: React.FC<ProcessFormScreenProps> = ({
   const handleAutoFillDemo = () => {
     const mock = ProcessStorageService.createInitialProcess({
       processNumber: `PROC-NAR-${Math.floor(1000 + Math.random() * 9000)}`,
-      species: 'Naranja',
+      species: 'Naranja' as Species,
       variety: 'Fukumoto',
       exportCategory: 'EXTRA-FANCY',
       producerCode: 'P-9920',
@@ -137,10 +137,7 @@ export const ProcessFormScreen: React.FC<ProcessFormScreenProps> = ({
               onChange={e => handleChange('species', e.target.value)}
             >
               <option value="Naranja">🍊 Naranja (Norma Técnica 4.2 / 4.3)</option>
-              <option value="Mandarina">🍊 Mandarina / Clementina</option>
-              <option value="Limón">🍋 Limón</option>
-              <option value="Cereza">🍒 Cereza</option>
-              <option value="Palta">🥑 Palta</option>
+              <option value="Mandarina">🍊 Mandarina (calibres normal y Costco)</option>
             </select>
           </div>
         </div>
@@ -168,8 +165,9 @@ export const ProcessFormScreen: React.FC<ProcessFormScreenProps> = ({
               onChange={e => handleChange('exportCategory', e.target.value)}
               style={{ fontWeight: 800, color: formData.exportCategory === 'EXTRA-FANCY' ? '#34D399' : '#F59E0B' }}
             >
-              <option value="EXTRA-FANCY">⭐ EXTRA-FANCY (Tolerancia Total 10%)</option>
-              <option value="FANCY">🏷️ FANCY (Tolerancia Total 12%)</option>
+              <option value="EXTRA-FANCY">⭐ EXTRA-FANCY (Walmart/Sam's/USA/Costco · Total 10%)</option>
+              <option value="FANCY">🏷️ FANCY (Canadá/Europa/UK/USA · Total 12%)</option>
+              <option value="FANCY-LATAM">🌎 FANCY LATAM (Latinoamérica · Total 14%)</option>
             </select>
           </div>
         </div>

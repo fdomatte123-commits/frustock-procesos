@@ -5,20 +5,20 @@ const HISTORY_KEY = 'FRUSTOCK_PROCESS_HISTORY_V1';
 
 export class ProcessStorageService {
   /**
-   * Save or update current process
+   * Save or update current process.
+   * Devuelve true si se guardó bien; false si falló (ej. cuota de almacenamiento llena).
    */
-  static saveCurrentProcess(process: ProcessData): void {
+  static saveCurrentProcess(process: ProcessData): boolean {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(process));
       this.saveToHistory(process);
+      return true;
     } catch (error) {
       console.error('Error saving process to storage:', error);
+      return false;
     }
   }
 
-  /**
-   * Load active process or return null
-   */
   static getCurrentProcess(): ProcessData | null {
     try {
       const data = localStorage.getItem(STORAGE_KEY);
@@ -30,9 +30,10 @@ export class ProcessStorageService {
   }
 
   /**
-   * Add a box to current process
+   * Agrega una caja. Devuelve el proceso actualizado, o null si no hay proceso,
+   * o el string 'QUOTA' si no se pudo guardar por falta de espacio.
    */
-  static addBoxToCurrentProcess(box: BoxSampling): ProcessData | null {
+  static addBoxToCurrentProcess(box: BoxSampling): ProcessData | 'QUOTA' | null {
     const process = this.getCurrentProcess();
     if (!process) return null;
 
@@ -42,13 +43,11 @@ export class ProcessStorageService {
       updatedAt: new Date().toISOString()
     };
 
-    this.saveCurrentProcess(updatedProcess);
+    const ok = this.saveCurrentProcess(updatedProcess);
+    if (!ok) return 'QUOTA';
     return updatedProcess;
   }
 
-  /**
-   * Delete a box from current process
-   */
   static deleteBoxFromProcess(boxId: string): ProcessData | null {
     const process = this.getCurrentProcess();
     if (!process) return null;
@@ -67,9 +66,6 @@ export class ProcessStorageService {
     return updatedProcess;
   }
 
-  /**
-   * Save to process history
-   */
   private static saveToHistory(process: ProcessData): void {
     try {
       const historyRaw = localStorage.getItem(HISTORY_KEY);
@@ -82,41 +78,67 @@ export class ProcessStorageService {
       }
       localStorage.setItem(HISTORY_KEY, JSON.stringify(history.slice(0, 20)));
     } catch (e) {
-      console.error('Error saving history:', e);
+      // El historial es secundario: si no cabe, no interrumpir el guardado principal
+      console.warn('No se pudo actualizar el historial (secundario):', e);
     }
   }
 
   /**
-   * Create new default empty process for Naranja
+   * Crea un proceso NUEVO con todos los campos en blanco (sin datos demo).
    */
   static createInitialProcess(override: Partial<ProcessData> = {}): ProcessData {
     const now = new Date();
-    const dateStr = now.toISOString().split('T')[0];
-    const defaultNum = `PROC-NAR-${now.getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
-
     return {
       id: crypto.randomUUID(),
-      processNumber: override.processNumber || defaultNum,
-      species: override.species || 'Naranja',
-      variety: override.variety || 'Fukumoto',
-      exportCategory: override.exportCategory || 'EXTRA-FANCY',
-      producerCode: override.producerCode || 'P-8820',
-      producerName: override.producerName || 'Agrícola San Fernando',
-      csg: override.csg || '104820',
-      sdp: override.sdp || 'SDP-02',
-      receptionDate: override.receptionDate || dateStr,
-      lot: override.lot || `LOTE-NAR-${now.getMonth() + 1}${now.getDate()}`,
-      totalKg: override.totalKg || 22000,
+      processNumber: override.processNumber ?? '',
+      species: override.species ?? 'Naranja',
+      variety: override.variety ?? '',
+      exportCategory: override.exportCategory ?? 'EXTRA-FANCY',
+      producerCode: override.producerCode ?? '',
+      producerName: override.producerName ?? '',
+      csg: override.csg ?? '',
+      sdp: override.sdp ?? '',
+      receptionDate: override.receptionDate ?? '',
+      lot: override.lot ?? '',
+      totalKg: override.totalKg ?? 0,
       createdAt: now.toISOString(),
       updatedAt: now.toISOString(),
       boxes: []
     };
   }
 
-  /**
-   * Clear active session
-   */
   static clearCurrentProcess(): void {
     localStorage.removeItem(STORAGE_KEY);
   }
+}
+
+/**
+ * Comprime y redimensiona una imagen a un ancho máximo, devolviendo un
+ * data URL JPEG liviano. Evita reventar la cuota de localStorage con fotos grandes.
+ */
+export function compressImage(file: File, maxWidth = 1280, quality = 0.72): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        let { width, height } = img;
+        if (width > maxWidth) {
+          height = Math.round(height * (maxWidth / width));
+          width = maxWidth;
+        }
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return reject(new Error('No se pudo crear el contexto de imagen.'));
+        ctx.drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL('image/jpeg', quality));
+      };
+      img.onerror = () => reject(new Error('No se pudo cargar la imagen.'));
+      img.src = e.target?.result as string;
+    };
+    reader.onerror = () => reject(new Error('No se pudo leer el archivo.'));
+    reader.readAsDataURL(file);
+  });
 }
