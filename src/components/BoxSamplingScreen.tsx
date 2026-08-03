@@ -18,6 +18,7 @@ import {
 } from '../types/process';
 import { ProcessStorageService, compressImage } from '../services/storage';
 import { SessionService, AuditLog } from '../services/session';
+import { SearchableSelect, SelectOption } from './SearchableSelect';
 
 interface BoxSamplingScreenProps {
   process: ProcessData;
@@ -51,7 +52,8 @@ export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
   const [photos, setPhotos] = useState<string[]>([]);
   const [defects, setDefects] = useState<DefectItem[]>([]);
   const [selectedDefectIndex, setSelectedDefectIndex] = useState<number>(0);
-  const [defectValue, setDefectValue] = useState<number>(5);
+  // Se guarda como texto para poder dejar el campo en blanco tras agregar
+  const [defectValue, setDefectValue] = useState<string>('');
   const [notes, setNotes] = useState<string>('');
   const [isCompressing, setIsCompressing] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -204,7 +206,12 @@ export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
   const handleAddDefect = () => {
     const defectDef = defectsList[selectedDefectIndex];
     if (!defectDef) return;
-    const valor = Number.isFinite(defectValue) ? defectValue : 0;
+
+    const valor = parseFloat(defectValue.replace(',', '.'));
+    if (!Number.isFinite(valor) || valor <= 0) {
+      showNotification('Ingresa el porcentaje encontrado antes de agregar.');
+      return;
+    }
 
     setDefects(prev => {
       const existingIndex = prev.findIndex(d => d.name === defectDef.name);
@@ -224,6 +231,10 @@ export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
       };
       return [...prev, newDefect];
     });
+
+    // Dejar el formulario listo para el defecto siguiente
+    setDefectValue('');
+    showNotification(`${defectDef.name}: ${valor}% agregado.`);
   };
 
   const handleRemoveDefect = (id: string) => {
@@ -290,6 +301,7 @@ export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
       setPhotos([]);
       setDefects([]);
       setNotes('');
+      setDefectValue('');
     }
   };
 
@@ -302,6 +314,7 @@ export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
     setPhotos([...(b.photos || [])]);
     setDefects([...(b.defects || [])]);
     setNotes(b.notes || '');
+    setDefectValue('');
     setEditandoId(b.id);
     setEditandoNumero(b.boxNumber);
     showNotification(`Editando caja #${b.boxNumber}. Corrige y guarda los cambios.`);
@@ -314,6 +327,7 @@ export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
     setPhotos([]);
     setDefects([]);
     setNotes('');
+    setDefectValue('');
     showNotification('Edición cancelada.');
   };
 
@@ -324,6 +338,18 @@ export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
       showNotification('Caja eliminada.');
     }
   };
+
+  // Opciones del selector de defectos: sin el prefijo [CALIDAD]/[CONDICION],
+  // que ahora se representa con un punto de color en la lista.
+  const defectOptions: SelectOption[] = useMemo(
+    () => defectsList.map((def, i) => ({
+      value: i,
+      label: def.name,
+      hint: `Tol ${getTolerance(def, process.exportCategory)}%`,
+      tone: def.type === 'condicion' ? 'condicion' : 'calidad'
+    })),
+    [defectsList, process.exportCategory]
+  );
 
   const activeCaliber = calibers[selectedCaliberIndex];
   const maxCalidadDisplay = getMaxCalidad(process.species, process.exportCategory);
@@ -505,16 +531,28 @@ export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
             <div className="grid-2" style={{ marginBottom: '10px' }}>
               <div>
                 <span style={{ fontSize: '0.75rem', color: '#94A3B8', display: 'block', marginBottom: '4px' }}>Seleccionar Defecto</span>
-                <select className="form-select" value={selectedDefectIndex} onChange={e => setSelectedDefectIndex(Number(e.target.value))}>
-                  {defectsList.map((def, i) => (
-                    <option key={i} value={i}>[{def.type.toUpperCase()}] {def.name} (Tol {getTolerance(def, process.exportCategory)}%)</option>
-                  ))}
-                </select>
+                <SearchableSelect
+                  options={defectOptions}
+                  value={selectedDefectIndex}
+                  onChange={setSelectedDefectIndex}
+                  placeholder="Escribe para buscar el defecto…"
+                  emptyText="Ningún defecto coincide con la búsqueda"
+                />
               </div>
               <div>
                 <span style={{ fontSize: '0.75rem', color: '#94A3B8', display: 'block', marginBottom: '4px' }}>Porcentaje Encontrado (%)</span>
                 <div style={{ display: 'flex', gap: '8px' }}>
-                  <input type="number" className="form-input" value={defectValue} onChange={e => setDefectValue(Number(e.target.value))} min="0" max="100" />
+                  <input
+                    type="text"
+                    className="form-input"
+                    value={defectValue}
+                    /* Solo dígitos y un separador decimal (coma o punto) */
+                    onChange={e => setDefectValue(e.target.value.replace(/[^0-9.,]/g, ''))}
+                    onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleAddDefect(); } }}
+                    inputMode="decimal"
+                    placeholder="0"
+                    autoComplete="off"
+                  />
                   <button type="button" className="btn-secondary" onClick={handleAddDefect} style={{ background: '#059669', borderColor: '#059669', color: 'white', whiteSpace: 'nowrap' }}>
                     <Plus size={18} /><span>Agregar</span>
                   </button>
