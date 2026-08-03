@@ -451,6 +451,9 @@ export class PDFReportGenerator {
               <td style="padding: 8px 12px; text-align: center; color: #64748B; font-size: 11px;">${tol} %</td>
               <td style="padding: 8px 12px; text-align: right; font-weight: 800; color: ${isExceeded ? '#DC2626' : '#0F172A'}; font-size: 13px;">
                 ${d.countOrPercentage} %
+                ${d.unidades != null
+                  ? `<div style="font-size:9px; font-weight:600; color:#94A3B8; margin-top:1px;">${d.unidades} de ${d.totalFrutos} frutos</div>`
+                  : ''}
               </td>
             </tr>`;
         }).join('')
@@ -504,6 +507,9 @@ export class PDFReportGenerator {
                 <div style="display: flex; align-items: center; gap: 12px; margin-top: 4px;">
                   <h2 style="margin: 0; font-size: 20px; font-weight: 800; color: #0F172A;">${caliberLabel}</h2>
                   <span style="font-size: 12px; color: #475569; background: #F1F5F9; padding: 2px 8px; border-radius: 4px; font-weight: 600;">Diámetro: ${esc(box.diameterMm || 'N/A')} | Peso: ${esc(box.weightGr || 'N/A')}</span>
+                  ${box.totalFrutos != null
+                    ? `<span style="font-size: 12px; color: #92400E; background: #FEF3C7; padding: 2px 8px; border-radius: 4px; font-weight: 700;">${box.totalFrutos} frutos evaluados</span>`
+                    : ''}
                 </div>
               </div>
               <div style="background: ${statusBg}; border: 1.5px solid ${statusBorder}; color: ${statusColor}; font-size: 15px; font-weight: 800; padding: 6px 18px; border-radius: 20px; text-transform: uppercase;">CAJA ${box.status}</div>

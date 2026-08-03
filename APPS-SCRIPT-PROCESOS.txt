@@ -44,7 +44,7 @@ const COLS_PROCESO = [
 
 const COLS_CAJA = [
   "Folio", "N° Proceso", "Caja", "Calibre", "Rótulo", "Programa", "Diámetro", "Peso",
-  "Color", "Estado", "Motivos", "Defectos", "N° Fotos", "Observaciones",
+  "Color", "Total Frutos", "Estado", "Motivos", "Defectos", "N° Fotos", "Observaciones",
   "Inspector", "Registrado", "Editado"
 ];
 
@@ -97,7 +97,7 @@ function doPost(e) {
 
       const filas = payload.cajas.map(c => [
         c.folio, c.numeroProceso, c.caja, c.calibre, c.rotulo, c.programa, c.diametro, c.peso,
-        c.color, c.estado, c.motivos, c.defectos, c.fotos, c.observaciones,
+        c.color, c.totalFrutos, c.estado, c.motivos, c.defectos, c.fotos, c.observaciones,
         c.inspector, c.registrado, c.editado
       ]);
       hoja.getRange(hoja.getLastRow() + 1, 1, filas.length, COLS_CAJA.length).setValues(filas);

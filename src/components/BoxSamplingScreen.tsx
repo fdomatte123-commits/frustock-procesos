@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { Camera, Plus, Trash2, CheckCircle2, AlertOctagon, FileText, Image as ImageIcon, Check, ShieldAlert, Pencil } from 'lucide-react';
+import { Camera, Plus, Trash2, CheckCircle2, AlertOctagon, FileText, Image as ImageIcon, Check, ShieldAlert, Pencil, Hash } from 'lucide-react';
 import {
   ProcessData,
   BoxSampling,
@@ -14,7 +14,9 @@ import {
   getMaxCalidad,
   getMaxTotalCaja,
   getMaxGraves,
-  getCategoriaLabel
+  getCategoriaLabel,
+  frutosSugeridosPorCalibre,
+  porcentajeDesdeUnidades
 } from '../types/process';
 import { ProcessStorageService, compressImage } from '../services/storage';
 import { SessionService, AuditLog } from '../services/session';
@@ -28,6 +30,20 @@ interface BoxSamplingScreenProps {
 
 // Límite de fotos por caja: protege la cuota de almacenamiento del dispositivo
 const MAX_FOTOS_POR_CAJA = 4;
+
+/**
+ * Criterio de rechazo: la caja se objeta por el VOLUMEN TOTAL de fruta mala
+ * contra el techo de la categoría (10% EXTRA-FANCY y 12% FANCY en naranja;
+ * 10/11/12/14% en mandarina), no defecto por defecto.
+ *
+ * Única excepción: la pudrición. Un solo fruto podrido objeta la caja completa
+ * sin importar el porcentaje, porque contamina el resto del embalaje en tránsito.
+ * Todo lo demás —incluidas las plagas y los defectos que la norma tenía en 0%—
+ * solo suma al total.
+ *
+ * Para que absolutamente todo se juegue al total, deja la lista vacía.
+ */
+const DEFECTOS_VETO_ABSOLUTO = ['Pudrición'];
 
 export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
   process,
@@ -54,6 +70,10 @@ export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
   const [selectedDefectIndex, setSelectedDefectIndex] = useState<number>(0);
   // Se guarda como texto para poder dejar el campo en blanco tras agregar
   const [defectValue, setDefectValue] = useState<string>('');
+  // Total de frutos de la caja: base de todos los porcentajes
+  const [totalFrutos, setTotalFrutos] = useState<string>('');
+  // Marca si el inspector escribió el total a mano; si no, sigue al calibre
+  const [totalEditado, setTotalEditado] = useState(false);
   const [notes, setNotes] = useState<string>('');
   const [isCompressing, setIsCompressing] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -69,6 +89,39 @@ export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
   useEffect(() => {
     if (selectedDefectIndex >= defectsList.length) setSelectedDefectIndex(0);
   }, [defectsList, selectedDefectIndex]);
+
+  const calibreActual = calibers[selectedCaliberIndex];
+  const frutosSugeridos = frutosSugeridosPorCalibre(calibreActual?.caliber, process.species);
+  const totalFrutosNum = parseInt(totalFrutos, 10);
+  const totalValido = Number.isFinite(totalFrutosNum) && totalFrutosNum > 0;
+
+  // El total sigue al calibre mientras el inspector no lo haya escrito a mano.
+  // En mandarina el calibre es un grado de tamaño (1XX, 2, 5B…), no un conteo:
+  // ahí queda en blanco y lo cuenta la persona.
+  useEffect(() => {
+    if (totalEditado) return;
+    setTotalFrutos(frutosSugeridos != null ? String(frutosSugeridos) : '');
+  }, [frutosSugeridos, totalEditado]);
+
+  /** Rehace los porcentajes de los defectos ya cargados contra un total nuevo */
+  const recalcularDefectos = (nuevoTotal: number) => {
+    setDefects(prev => prev.map(d => {
+      if (d.unidades == null) return d;   // cargado antes de esta versión: se respeta
+      return {
+        ...d,
+        countOrPercentage: porcentajeDesdeUnidades(d.unidades, nuevoTotal),
+        totalFrutos: nuevoTotal
+      };
+    }));
+  };
+
+  const cambiarTotal = (texto: string) => {
+    const limpio = texto.replace(/[^0-9]/g, '');
+    setTotalFrutos(limpio);
+    setTotalEditado(true);
+    const n = parseInt(limpio, 10);
+    if (Number.isFinite(n) && n > 0) recalcularDefectos(n);
+  };
 
   const showNotification = (msg: string) => {
     setToastMessage(msg);
@@ -101,16 +154,23 @@ export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
         if (d.category === 'leve') totalLevesPct += d.countOrPercentage;
       }
 
-      const tolerance = getTolerance(d, process.exportCategory);
-      if (d.countOrPercentage > tolerance) {
+      // El veredicto lo da el volumen total de fruta mala, no cada defecto por
+      // separado. La pudrición es la única excepción.
+      if (DEFECTOS_VETO_ABSOLUTO.includes(d.name) && d.countOrPercentage > 0) {
         status = 'OBJETADA';
-        reasons.push(`Defecto "${d.name}" excede tolerancia (${d.countOrPercentage}% > máx ${tolerance}%)`);
+        const frutos = d.unidades != null ? `${d.unidades} fruto${d.unidades === 1 ? '' : 's'}` : `${d.countOrPercentage}%`;
+        reasons.push(`Se detectó ${d.name.toLowerCase()} (${frutos}): objeta la caja automáticamente`);
       }
     });
 
-    const totalCajaPct = totalCalidadPct + totalCondicionPct;
+    // Redondear antes de comparar: sumar decimales en coma flotante puede dar
+    // 10.000000000000002 y objetar una caja que está justo en el techo.
+    const red = (n: number) => Math.round(n * 10) / 10;
+    const totalCajaPct = red(totalCalidadPct + totalCondicionPct);
+    totalGravesPct = red(totalGravesPct);
+    totalLevesPct = red(totalLevesPct);
 
-    // Palta: techo específico para defectos graves (5%) y leves (7%)
+    // Palta conserva sus techos propios de la norma: graves 5%, leves 7%
     if (maxGraves !== null && totalGravesPct > maxGraves) {
       status = 'OBJETADA';
       reasons.push(`Total defectos graves excede el límite (${totalGravesPct}% > máx ${maxGraves}%)`);
@@ -120,13 +180,11 @@ export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
       reasons.push(`Total defectos leves excede el límite (${totalLevesPct}% > máx ${maxCalidad}%)`);
     }
 
-    if (process.species !== 'Palta' && totalCalidadPct > maxCalidad) {
-      status = 'OBJETADA';
-      reasons.push(`Total defectos de calidad excede el límite (${totalCalidadPct}% > máx ${maxCalidad}% en ${catLabel})`);
-    }
+    // Cítricos: el único techo es el total de la caja. El sub-techo de calidad
+    // se retiró para que el veredicto dependa solo del volumen de fruta mala.
     if (totalCajaPct > maxTotalCaja) {
       status = 'OBJETADA';
-      reasons.push(`Total defectos en la caja excede el límite (${totalCajaPct}% > máx ${maxTotalCaja}% en ${catLabel})`);
+      reasons.push(`Total de fruta con defecto excede el límite (${totalCajaPct}% > máx ${maxTotalCaja}% en ${catLabel})`);
     }
 
     // Reglas de color (tabla de colores): grado 5 = defecto; 6-8 = fruta no embalable
@@ -207,34 +265,58 @@ export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
     const defectDef = defectsList[selectedDefectIndex];
     if (!defectDef) return;
 
-    const valor = parseFloat(defectValue.replace(',', '.'));
-    if (!Number.isFinite(valor) || valor <= 0) {
-      showNotification('Ingresa el porcentaje encontrado antes de agregar.');
+    if (!totalValido) {
+      showNotification('Primero indica cuántos frutos tiene la caja.');
       return;
     }
+
+    const unidades = parseInt(defectValue, 10);
+    if (!Number.isFinite(unidades) || unidades <= 0) {
+      showNotification('Ingresa cuántos frutos tienen el defecto.');
+      return;
+    }
+    if (unidades > totalFrutosNum) {
+      showNotification(`No puede haber ${unidades} frutos con defecto en una caja de ${totalFrutosNum}.`);
+      return;
+    }
+
+    const pct = porcentajeDesdeUnidades(unidades, totalFrutosNum);
 
     setDefects(prev => {
       const existingIndex = prev.findIndex(d => d.name === defectDef.name);
       if (existingIndex >= 0) {
-        // Inmutable: crear objeto nuevo en vez de mutar el del estado
-        return prev.map((d, i) => i === existingIndex ? { ...d, countOrPercentage: valor } : d);
+        // Ya estaba: se suman los frutos en vez de reemplazarlos, porque el
+        // inspector suele ir contando por tandas mientras revisa la caja
+        return prev.map((d, i) => {
+          if (i !== existingIndex) return d;
+          const acumulado = Math.min((d.unidades ?? 0) + unidades, totalFrutosNum);
+          return {
+            ...d,
+            unidades: acumulado,
+            totalFrutos: totalFrutosNum,
+            countOrPercentage: porcentajeDesdeUnidades(acumulado, totalFrutosNum)
+          };
+        });
       }
       const newDefect: DefectItem = {
         id: crypto.randomUUID(),
         name: defectDef.name,
         category: defectDef.category,
         type: defectDef.type,
-        countOrPercentage: valor,
+        countOrPercentage: pct,
         unit: defectDef.unit,
         tolerance: getTolerance(defectDef, process.exportCategory),
-        excludeFromTotal: defectDef.excludeFromTotal
+        excludeFromTotal: defectDef.excludeFromTotal,
+        sinTopeIndividual: defectDef.sinTopeIndividual,
+        unidades,
+        totalFrutos: totalFrutosNum
       };
       return [...prev, newDefect];
     });
 
     // Dejar el formulario listo para el defecto siguiente
     setDefectValue('');
-    showNotification(`${defectDef.name}: ${valor}% agregado.`);
+    showNotification(`${defectDef.name}: ${unidades} de ${totalFrutosNum} frutos (${pct}%).`);
   };
 
   const handleRemoveDefect = (id: string) => {
@@ -256,6 +338,7 @@ export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
       weightGr: `${calObj.weightGr} gr`,
       colorGrade: selectedColorGrade,
       colorName: colorObj?.name,
+      totalFrutos: totalValido ? totalFrutosNum : undefined,
       status: evaluationResult.status,
       statusReasons: evaluationResult.reasons,
       photos: [...photos],
@@ -302,6 +385,7 @@ export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
       setDefects([]);
       setNotes('');
       setDefectValue('');
+      setTotalEditado(false);   // la caja siguiente vuelve a seguir al calibre
     }
   };
 
@@ -315,6 +399,11 @@ export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
     setDefects([...(b.defects || [])]);
     setNotes(b.notes || '');
     setDefectValue('');
+    // El total guardado manda: así los porcentajes de la caja no cambian al editarla
+    if (b.totalFrutos != null) {
+      setTotalFrutos(String(b.totalFrutos));
+      setTotalEditado(true);
+    }
     setEditandoId(b.id);
     setEditandoNumero(b.boxNumber);
     showNotification(`Editando caja #${b.boxNumber}. Corrige y guarda los cambios.`);
@@ -328,6 +417,7 @@ export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
     setDefects([]);
     setNotes('');
     setDefectValue('');
+    setTotalEditado(false);   // la caja siguiente vuelve a seguir al calibre
     showNotification('Edición cancelada.');
   };
 
@@ -345,11 +435,33 @@ export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
     () => defectsList.map((def, i) => ({
       value: i,
       label: def.name,
-      hint: `Tol ${getTolerance(def, process.exportCategory)}%`,
+      // Los defectos sin techo propio solo aportan al total de la caja
+      hint: DEFECTOS_VETO_ABSOLUTO.includes(def.name) ? 'objeta la caja' : 'suma al total',
       tone: def.type === 'condicion' ? 'condicion' : 'calidad'
     })),
     [defectsList, process.exportCategory]
   );
+
+  /** Porcentaje que resultaría de lo que hay escrito, para mostrarlo antes de agregar */
+  const vistaPrevia = useMemo(() => {
+    const u = parseInt(defectValue, 10);
+    const def = defectsList[selectedDefectIndex];
+    if (!def || !totalValido || !Number.isFinite(u) || u <= 0) return null;
+    const pct = porcentajeDesdeUnidades(u, totalFrutosNum);
+    const veto = DEFECTOS_VETO_ABSOLUTO.includes(def.name);
+    // Cuánto quedaría el total de la caja si se agrega este defecto
+    const yaSumado = defects.reduce((s, d) => s + (d.excludeFromTotal ? 0 : d.countOrPercentage), 0);
+    const existente = defects.find(d => d.name === def.name);
+    let delta = pct;
+    if (existente && existente.unidades != null) {
+      // Al repetir un defecto se acumulan los frutos: el aporte es la diferencia
+      const acumulado = Math.min(existente.unidades + u, totalFrutosNum);
+      delta = porcentajeDesdeUnidades(acumulado, totalFrutosNum) - existente.countOrPercentage;
+    }
+    const proyectado = Math.round((yaSumado + (def.excludeFromTotal ? 0 : delta)) * 10) / 10;
+    const techo = getMaxTotalCaja(process.species, process.exportCategory);
+    return { pct, veto, proyectado, techo };
+  }, [defectValue, defectsList, selectedDefectIndex, totalValido, totalFrutosNum, process.exportCategory, process.species, defects]);
 
   const activeCaliber = calibers[selectedCaliberIndex];
   const maxCalidadDisplay = getMaxCalidad(process.species, process.exportCategory);
@@ -523,8 +635,55 @@ export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
             <label className="form-label">Defectos Registrados</label>
             <span style={{ fontSize: '0.75rem', color: '#94A3B8' }}>
-              Máx Calidad: <strong style={{ color: '#34D399' }}>{maxCalidadDisplay}%</strong> | Total Caja: <strong style={{ color: '#34D399' }}>{maxCajaDisplay}%</strong>
+              {/* En cítricos el único techo es el total; palta conserva el suyo de graves/leves */}
+              {process.species === 'Palta'
+                ? <>Máx leves: <strong style={{ color: '#34D399' }}>{maxCalidadDisplay}%</strong> | Total caja: <strong style={{ color: '#34D399' }}>{maxCajaDisplay}%</strong></>
+                : <>Techo de la caja: <strong style={{ color: '#34D399' }}>{maxCajaDisplay}%</strong></>}
             </span>
+          </div>
+
+          {/* Total de frutos: base de todos los porcentajes de la caja */}
+          <div style={{
+            background: totalValido ? 'rgba(245,158,11,0.08)' : 'rgba(239,68,68,0.10)',
+            border: `1.5px solid ${totalValido ? '#F59E0B' : '#EF4444'}`,
+            borderRadius: '12px', padding: '12px 14px', marginBottom: '12px',
+            display: 'flex', alignItems: 'center', gap: '14px', flexWrap: 'wrap'
+          }}>
+            <Hash size={20} color={totalValido ? '#F59E0B' : '#F87171'} style={{ flexShrink: 0 }} />
+            <div style={{ flex: 1, minWidth: '150px' }}>
+              <div style={{ fontSize: '0.82rem', fontWeight: 800, color: '#E2E8F0' }}>Total de frutos en la caja</div>
+              <div style={{ fontSize: '0.72rem', color: '#94A3B8', marginTop: '2px' }}>
+                {frutosSugeridos != null
+                  ? (totalEditado
+                      ? `El calibre ${calibreActual?.caliber} sugiere ${frutosSugeridos}`
+                      : `Tomado del calibre ${calibreActual?.caliber}. Corrígelo si la caja trae otra cantidad.`)
+                  : 'En mandarina el calibre no indica el conteo: cuenta los frutos de la caja.'}
+              </div>
+            </div>
+            <input
+              type="text"
+              value={totalFrutos}
+              onChange={e => cambiarTotal(e.target.value)}
+              inputMode="numeric"
+              placeholder="—"
+              autoComplete="off"
+              style={{
+                width: '92px', textAlign: 'center', fontSize: '1.35rem', fontWeight: 800,
+                padding: '8px 6px', borderRadius: '10px', background: '#0F172A',
+                border: `1.5px solid ${totalValido ? '#F59E0B' : '#EF4444'}`,
+                color: totalValido ? '#FBBF24' : '#F87171', fontFamily: 'inherit', outline: 'none'
+              }}
+            />
+            {totalEditado && frutosSugeridos != null && (
+              <button
+                type="button"
+                onClick={() => { setTotalEditado(false); setTotalFrutos(String(frutosSugeridos)); recalcularDefectos(frutosSugeridos); }}
+                style={{ background: 'transparent', border: '1px solid #475569', color: '#94A3B8',
+                         borderRadius: '8px', padding: '6px 10px', fontSize: '0.72rem', cursor: 'pointer', fontFamily: 'inherit' }}
+              >
+                Volver a {frutosSugeridos}
+              </button>
+            )}
           </div>
 
           <div style={{ background: '#0F172A', padding: '14px', borderRadius: '12px', border: '1px solid #334155', marginBottom: '14px' }}>
@@ -540,22 +699,36 @@ export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
                 />
               </div>
               <div>
-                <span style={{ fontSize: '0.75rem', color: '#94A3B8', display: 'block', marginBottom: '4px' }}>Porcentaje Encontrado (%)</span>
+                <span style={{ fontSize: '0.75rem', color: '#94A3B8', display: 'block', marginBottom: '4px' }}>Frutos con el defecto</span>
                 <div style={{ display: 'flex', gap: '8px' }}>
                   <input
                     type="text"
                     className="form-input"
                     value={defectValue}
-                    /* Solo dígitos y un separador decimal (coma o punto) */
-                    onChange={e => setDefectValue(e.target.value.replace(/[^0-9.,]/g, ''))}
+                    onChange={e => setDefectValue(e.target.value.replace(/[^0-9]/g, ''))}
                     onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleAddDefect(); } }}
-                    inputMode="decimal"
+                    inputMode="numeric"
                     placeholder="0"
                     autoComplete="off"
+                    style={{ textAlign: 'center', fontWeight: 700 }}
                   />
                   <button type="button" className="btn-secondary" onClick={handleAddDefect} style={{ background: '#059669', borderColor: '#059669', color: 'white', whiteSpace: 'nowrap' }}>
                     <Plus size={18} /><span>Agregar</span>
                   </button>
+                </div>
+                {/* Vista previa del porcentaje antes de agregar */}
+                <div style={{ fontSize: '0.75rem', marginTop: '6px', minHeight: '18px', color: '#64748B' }}>
+                  {vistaPrevia && (
+                    <span style={{
+                      color: vistaPrevia.veto || vistaPrevia.proyectado > vistaPrevia.techo ? '#F87171' : '#34D399',
+                      fontWeight: 700
+                    }}>
+                      = {vistaPrevia.pct}% de {totalFrutosNum} frutos
+                      {vistaPrevia.veto
+                        ? ' · objeta la caja automáticamente'
+                        : ` · caja quedaría en ${vistaPrevia.proyectado}% de ${vistaPrevia.techo}%`}
+                    </span>
+                  )}
                 </div>
               </div>
             </div>
@@ -564,17 +737,23 @@ export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
           {defects.length > 0 ? (
             <div>
               {defects.map(defect => {
-                const tol = getTolerance(defect, process.exportCategory);
-                const isExceeded = defect.countOrPercentage > tol;
+                const esVeto = DEFECTOS_VETO_ABSOLUTO.includes(defect.name);
                 return (
-                  <div key={defect.id} className="defect-card" style={{ borderColor: isExceeded ? '#EF4444' : '#334155' }}>
+                  <div key={defect.id} className="defect-card" style={{ borderColor: esVeto ? '#EF4444' : '#334155' }}>
                     <div>
                       <span className={`defect-badge ${defect.category}`}>{defect.type}</span>
                       <strong style={{ marginLeft: '10px', fontSize: '0.95rem', color: 'white' }}>{defect.name}</strong>
-                      <span style={{ fontSize: '0.75rem', color: '#94A3B8', marginLeft: '8px' }}>(Max Tol: {tol}%)</span>
+                      {esVeto && (
+                        <span style={{ fontSize: '0.7rem', color: '#F87171', marginLeft: '8px', fontWeight: 800 }}>OBJETA LA CAJA</span>
+                      )}
+                      {defect.unidades != null && (
+                        <div style={{ fontSize: '0.72rem', color: '#64748B', marginTop: '3px' }}>
+                          {defect.unidades} de {defect.totalFrutos} frutos
+                        </div>
+                      )}
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
-                      <span style={{ fontWeight: 800, color: isExceeded ? '#EF4444' : '#34D399', fontSize: '1rem' }}>{defect.countOrPercentage} % {isExceeded ? '⚠️' : ''}</span>
+                      <span style={{ fontWeight: 800, color: esVeto ? '#EF4444' : '#CBD5E1', fontSize: '1rem' }}>{defect.countOrPercentage} %</span>
                       <button type="button" onClick={() => handleRemoveDefect(defect.id)} style={{ background: 'transparent', border: 'none', color: '#EF4444', cursor: 'pointer' }}>
                         <Trash2 size={16} />
                       </button>
@@ -582,6 +761,41 @@ export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
                   </div>
                 );
               })}
+
+              {/* Acumulado de la caja contra el techo de la categoría */}
+              {(() => {
+                const acumulado = Math.round(defects.reduce(
+                  (s, d) => s + (d.excludeFromTotal ? 0 : d.countOrPercentage), 0) * 10) / 10;
+                const techo = maxCajaDisplay;
+                const excede = acumulado > techo;
+                const frutosMalos = defects.reduce((s, d) => s + (d.excludeFromTotal ? 0 : (d.unidades ?? 0)), 0);
+                return (
+                  <div style={{
+                    marginTop: '10px', padding: '11px 14px', borderRadius: '10px',
+                    background: excede ? 'rgba(239,68,68,0.12)' : 'rgba(16,185,129,0.10)',
+                    border: `1.5px solid ${excede ? '#EF4444' : '#059669'}`,
+                    display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px'
+                  }}>
+                    <div>
+                      <div style={{ fontSize: '0.8rem', fontWeight: 800, color: '#E2E8F0' }}>
+                        Total de fruta con defecto
+                      </div>
+                      <div style={{ fontSize: '0.72rem', color: '#94A3B8', marginTop: '2px' }}>
+                        {frutosMalos > 0 && totalValido ? `${frutosMalos} de ${totalFrutosNum} frutos · ` : ''}
+                        techo de {getCategoriaLabel(process.species, process.exportCategory)}: {techo}%
+                      </div>
+                    </div>
+                    <div style={{ textAlign: 'right' }}>
+                      <div style={{ fontSize: '1.5rem', fontWeight: 800, color: excede ? '#F87171' : '#34D399', lineHeight: 1 }}>
+                        {acumulado}%
+                      </div>
+                      <div style={{ fontSize: '0.68rem', fontWeight: 800, color: excede ? '#F87171' : '#34D399', marginTop: '3px' }}>
+                        {excede ? 'SUPERA EL TECHO' : `quedan ${Math.round((techo - acumulado) * 10) / 10}%`}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
           ) : (
             <div style={{ padding: '12px', background: '#0F172A', border: '1px dashed #334155', borderRadius: '8px', textAlign: 'center', color: '#94A3B8', fontSize: '0.85rem' }}>

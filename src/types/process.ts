@@ -24,10 +24,17 @@ export interface DefectItem {
   name: string;
   category: DefectSeverity;
   type: DefectCategoryType;
+  /** Porcentaje sobre el total de frutos de la caja. Es el valor que evalúan las tolerancias. */
   countOrPercentage: number;
   unit: '%' | 'unidades';
   tolerance: number;          // tolerancia aplicable en la categoría del proceso
   excludeFromTotal?: boolean; // ej. Descalibre en limón no suma al total de la caja
+  /** Frutos con el defecto que contó el inspector (queda para poder auditar el %) */
+  unidades?: number;
+  /** Total de frutos contra el que se calculó el porcentaje */
+  totalFrutos?: number;
+  /** El defecto no tiene techo propio: solo aporta al total de la caja */
+  sinTopeIndividual?: boolean;
 }
 
 /** Medición de madurez registrada en el proceso (Brix, acidez, materia seca…) */
@@ -119,6 +126,41 @@ export function parsearPesos(texto: string): number[] {
     .filter(n => Number.isFinite(n) && n > 0);
 }
 
+/**
+ * Frutos por caja que sugiere un calibre.
+ *
+ * En naranja, limón y palta el calibre ES el conteo de frutos de la caja
+ * (calibre 105 = 105 frutos), así que sirve como valor por defecto.
+ * En mandarina los calibres son grados de tamaño (1XX, 1X, 1, 2, 3, 4, 5, 5B)
+ * y no dicen nada del conteo: ahí devolvemos null y lo escribe el inspector.
+ */
+export function frutosSugeridosPorCalibre(
+  caliber: string | undefined,
+  species: Species
+): number | null {
+  // Mandarina va primero y sin excepciones: sus calibres 1, 2, 3, 4 y 5 son
+  // dígitos puros y se colarían como "caja de 2 frutos", que daría 50% con un
+  // solo fruto defectuoso.
+  if (species === 'Mandarina') return null;
+  if (!caliber) return null;
+  const limpio = String(caliber).replace(/calibre/i, '').trim();
+  // Solo dígitos: descarta cualquier etiqueta de tamaño (1XX, 2A, 5B…)
+  if (!/^\d+$/.test(limpio)) return null;
+  const n = parseInt(limpio, 10);
+  // Un conteo por caja bajo 10 no existe en packing: es una etiqueta, no un total
+  if (!Number.isFinite(n) || n < 10) return null;
+  return n;
+}
+
+/**
+ * Convierte unidades contadas a porcentaje sobre el total de la caja.
+ * Redondea a un decimal, que es la precisión con la que se leen las tolerancias.
+ */
+export function porcentajeDesdeUnidades(unidades: number, totalFrutos: number): number {
+  if (!Number.isFinite(unidades) || !Number.isFinite(totalFrutos) || totalFrutos <= 0) return 0;
+  return Math.round((unidades / totalFrutos) * 1000) / 10;
+}
+
 export interface BoxSampling {
   id: string;
   boxNumber: number;
@@ -131,6 +173,8 @@ export interface BoxSampling {
   weightGr?: string;
   colorGrade?: number | string;
   colorName?: string;
+  /** Frutos evaluados en la caja: base del cálculo de porcentajes */
+  totalFrutos?: number;
   status: BoxStatus;
   statusReasons?: string[];
   photos: string[];
@@ -388,6 +432,17 @@ export interface DefectDef {
   tolerances: Partial<Record<ExportCategory, number>>;
   /** Si es true, no se suma al total de la caja (ej. Descalibre en limón) */
   excludeFromTotal?: boolean;
+  /**
+   * El defecto no tiene techo propio: aporta al total de la caja y es ese total
+   * el que decide el veredicto. Se usa en los defectos del listado de packing,
+   * donde el criterio de rechazo es el volumen de fruta mala, no cada defecto.
+   */
+  sinTopeIndividual?: boolean;
+}
+
+/** Defecto que solo cuenta para el total de la caja */
+function sinTope(name: string, type: DefectCategoryType, category: DefectSeverity): DefectDef {
+  return { name, type, category, unit: '%', tolerances: {}, sinTopeIndividual: true };
 }
 
 /** NARANJA — tabla 4.3 */
@@ -417,7 +472,22 @@ export const ORANGE_DEFECTS_LIST: DefectDef[] = [
   { name: 'Fruto Blando', type: 'condicion', category: 'medio', unit: '%', tolerances: { 'EXTRA-FANCY': 2, FANCY: 2 } },
   { name: 'Oleocelosis (1 cm²)', type: 'condicion', category: 'medio', unit: '%', tolerances: { 'EXTRA-FANCY': 2, FANCY: 2 } },
   { name: 'Piquetes', type: 'condicion', category: 'medio', unit: '%', tolerances: { 'EXTRA-FANCY': 2, FANCY: 2 } },
-  { name: 'Daño Tijeras / Herida Abierta', type: 'condicion', category: 'grave', unit: '%', tolerances: { 'EXTRA-FANCY': 2, FANCY: 2 } }
+  { name: 'Daño Tijeras / Herida Abierta', type: 'condicion', category: 'grave', unit: '%', tolerances: { 'EXTRA-FANCY': 2, FANCY: 2 } },
+
+  // --- Planilla de packing: sin tope propio, suman al total de la caja ---
+  sinTope('Presencia de Conchuela', 'plagas', 'grave'),
+  sinTope('Chanchito Blanco', 'plagas', 'grave'),
+  sinTope('Mancha de Agua', 'condicion', 'medio'),
+  sinTope('Residuo de Producto', 'calidad', 'leve'),
+  sinTope('Mancha de Producto', 'calidad', 'leve'),
+  sinTope('Pedúnculo Largo', 'calidad', 'leve'),
+  sinTope('Herida de Pedúnculo', 'condicion', 'medio'),
+  sinTope('Machucón', 'condicion', 'medio'),
+  sinTope('Ombligo Negro', 'condicion', 'grave'),
+  sinTope('Quemado de Sol', 'calidad', 'medio'),
+  sinTope('Rugosidad Severa', 'calidad', 'medio'),
+  sinTope('Quimera', 'calidad', 'leve'),
+  sinTope('Daño por Helada', 'condicion', 'grave')
 ];
 
 /** MANDARINA — 4 categorías según % de semillas */
@@ -443,7 +513,28 @@ export const MANDARIN_DEFECTS_LIST: DefectDef[] = [
   { name: 'Ausencia de Roseta', type: 'calidad', category: 'leve', unit: '%', tolerances: { 'EF-SEM10': 5, 'F-SEM10': 5, 'F-SEM20': 5, 'F-SEM30': 5 } },
   { name: 'Oleocelosis Leve (0,5 cm²)', type: 'condicion', category: 'medio', unit: '%', tolerances: { 'EF-SEM10': 3, 'F-SEM10': 5, 'F-SEM20': 8, 'F-SEM30': 8 } },
   { name: 'Bufado Leve', type: 'condicion', category: 'leve', unit: '%', tolerances: { 'EF-SEM10': 3, 'F-SEM10': 4, 'F-SEM20': 5, 'F-SEM30': 5 } },
-  { name: 'Piquetes', type: 'condicion', category: 'medio', unit: '%', tolerances: { 'EF-SEM10': 3, 'F-SEM10': 3, 'F-SEM20': 3, 'F-SEM30': 3 } }
+  { name: 'Piquetes', type: 'condicion', category: 'medio', unit: '%', tolerances: { 'EF-SEM10': 3, 'F-SEM10': 3, 'F-SEM20': 3, 'F-SEM30': 3 } },
+
+  // --- Planilla de packing: sin tope propio, suman al total de la caja ---
+  sinTope('Presencia de Escamas', 'plagas', 'grave'),
+  sinTope('Presencia de Conchuela', 'plagas', 'grave'),
+  sinTope('Chanchito Blanco', 'plagas', 'grave'),
+  sinTope('Mancha de Agua', 'condicion', 'medio'),
+  sinTope('Mancha de Producto', 'calidad', 'leve'),
+  sinTope('Herida de Pedúnculo', 'condicion', 'medio'),
+  sinTope('Herida de Tijera', 'condicion', 'grave'),
+  sinTope('Ausencia de Pedúnculo', 'calidad', 'leve'),
+  sinTope('Machucón', 'condicion', 'medio'),
+  sinTope('Ombligo Rasgado', 'condicion', 'grave'),
+  sinTope('Ombligo Abierto', 'calidad', 'medio'),
+  sinTope('Ombligo Negro', 'condicion', 'grave'),
+  sinTope('Quemado de Sol', 'calidad', 'medio'),
+  sinTope('Rugosidad Severa', 'calidad', 'medio'),
+  sinTope('Deforme', 'calidad', 'medio'),
+  sinTope('Fruto Verde', 'calidad', 'grave'),
+  sinTope('Quimera', 'calidad', 'leve'),
+  sinTope('Daño por Helada', 'condicion', 'grave'),
+  sinTope('Daño de Caracol', 'calidad', 'leve')
 ];
 
 /** LIMÓN — tablas 13 (calidad) y 14 (condición) */

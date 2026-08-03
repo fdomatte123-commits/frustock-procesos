@@ -81,9 +81,13 @@ export const BackupService = {
         diametro: b.diameterMm || '',
         peso: b.weightGr || '',
         color: b.colorName ? `${b.colorGrade} - ${b.colorName}` : '',
+        totalFrutos: b.totalFrutos ?? '',
         estado: b.status,
         motivos: (b.statusReasons || []).join(' | '),
-        defectos: (b.defects || []).map(d => `${d.name}:${d.countOrPercentage}%`).join(', '),
+        // "Manchas:5/105 (4.8%)" deja auditable el conteo, no solo el porcentaje
+        defectos: (b.defects || []).map(d => d.unidades != null
+          ? `${d.name}:${d.unidades}/${d.totalFrutos} (${d.countOrPercentage}%)`
+          : `${d.name}:${d.countOrPercentage}%`).join(', '),
         fotos: (b.photos || []).length,
         observaciones: b.notes || '',
         inspector: b.inspector || process.inspector || '',
