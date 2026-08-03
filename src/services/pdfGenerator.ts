@@ -1,5 +1,5 @@
 import type jsPDFType from 'jspdf';
-import { ProcessData, getTolerance, getCategoriaLabel, calcularEstadisticasPeso } from '../types/process';
+import { ProcessData, getTolerance, getCategoriaLabel, calcularEstadisticasPeso, calcularEstadisticasGrupo } from '../types/process';
 import { LOGO_FRUSTOCK_PNG, LOGO_RATIO } from '../assets/logoFrustock';
 
 // jsPDF y html2canvas pesan ~600 kB y solo se usan al exportar.
@@ -246,30 +246,66 @@ export class PDFReportGenerator {
         </div>
       </div>` : '';
 
-    // Control de peso de cajas del packing
+    // Control de peso de cajas del packing, con el detalle por calibre:
+    // es ahí donde se ve la línea descalibrada que el promedio del turno esconde.
     const wc = process.weightControl;
     const ws = wc ? calcularEstadisticasPeso(wc) : null;
+    const tara = wc?.taraKg ?? 0;
+    const statsGrupos = (wc?.grupos ?? []).map(g =>
+      calcularEstadisticasGrupo(g, process.species, wc?.netoObjetivoKg, wc?.taraKg));
+    const criticos = statsGrupos.filter(s => s.total >= 3 && s.pctConforme < 70);
+
+    const filasPeso = statsGrupos.map(s => {
+      const alerta = s.total >= 3 && s.pctConforme < 70;
+      return `
+        <tr style="border-bottom:1px solid #F1F5F9; background:${alerta ? '#FEF2F2' : 'transparent'};">
+          <td style="padding:4px 8px; font-weight:700;">${esc(s.caliber)}${s.line ? ` <span style="color:#94A3B8; font-weight:600;">(${esc(s.line)})</span>` : ''}</td>
+          <td style="padding:4px 8px; text-align:center;">${s.total}</td>
+          <td style="padding:4px 8px; text-align:right;">${s.promedio.toFixed(3)}</td>
+          <td style="padding:4px 8px; text-align:right; color:#64748B;">${(s.promedio - tara).toFixed(3)}</td>
+          <td style="padding:4px 8px; text-align:center; color:#64748B; font-size:${FS.micro};">${s.rangoMin.toFixed(3)}–${s.rangoMax.toFixed(3)}</td>
+          <td style="padding:4px 8px; text-align:center; color:${s.bajoRango ? '#DC2626' : '#94A3B8'};">${s.bajoRango}</td>
+          <td style="padding:4px 8px; text-align:center; color:${s.sobreRango ? '#D97706' : '#94A3B8'};">${s.sobreRango}</td>
+          <td style="padding:4px 8px; text-align:right; font-weight:800; color:${alerta ? '#DC2626' : '#059669'};">${s.pctConforme.toFixed(0)}%</td>
+        </tr>`;
+    }).join('');
+
     const pesosHTML = (wc && ws && ws.total > 0) ? `
       <div style="border:1px solid #E2E8F0; border-radius:8px; padding:10px 12px; margin-top:14px; background:#FFFFFF;">
         <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:8px;">
           <span style="font-size:${FS.micro}; color:#64748B; font-weight:700; letter-spacing:.05em;">CONTROL DE PESO DE CAJAS</span>
           <span style="font-size:${FS.micro}; color:#94A3B8;">
-            ${esc(wc.formatLabel)} · rango ${wc.minKg.toFixed(3)}–${wc.maxKg.toFixed(3)} kg
+            Tara ${tara.toFixed(3)} kg · neto objetivo ${(wc.netoObjetivoKg ?? 0).toFixed(3)} kg · mínimo bruto ${wc.minKg.toFixed(3)} kg
           </span>
         </div>
-        <div style="display:grid; grid-template-columns:repeat(5,1fr); gap:8px; text-align:center;">
+        <div style="display:grid; grid-template-columns:repeat(5,1fr); gap:8px; text-align:center; margin-bottom:8px;">
           <div><div style="font-size:${FS.micro}; color:#64748B;">Cajas pesadas</div><div style="font-size:${FS.subtitulo}; font-weight:800;">${ws.total}</div></div>
-          <div><div style="font-size:${FS.micro}; color:#64748B;">Promedio</div><div style="font-size:${FS.subtitulo}; font-weight:800;">${ws.promedio.toFixed(3)}</div></div>
-          <div><div style="font-size:${FS.micro}; color:#64748B;">Mínimo</div><div style="font-size:${FS.subtitulo}; font-weight:800;">${ws.min.toFixed(3)}</div></div>
-          <div><div style="font-size:${FS.micro}; color:#64748B;">Máximo</div><div style="font-size:${FS.subtitulo}; font-weight:800;">${ws.max.toFixed(3)}</div></div>
+          <div><div style="font-size:${FS.micro}; color:#64748B;">Neto promedio</div><div style="font-size:${FS.subtitulo}; font-weight:800;">${(ws.promedio - tara).toFixed(3)}</div></div>
+          <div><div style="font-size:${FS.micro}; color:#64748B;">Bruto mínimo</div><div style="font-size:${FS.subtitulo}; font-weight:800;">${ws.min.toFixed(3)}</div></div>
+          <div><div style="font-size:${FS.micro}; color:#64748B;">Bruto máximo</div><div style="font-size:${FS.subtitulo}; font-weight:800;">${ws.max.toFixed(3)}</div></div>
           <div>
             <div style="font-size:${FS.micro}; color:#64748B;">Conforme</div>
-            <div style="font-size:${FS.subtitulo}; font-weight:800; color:${ws.pctConforme === 100 ? '#059669' : '#DC2626'};">${ws.pctConforme.toFixed(1)}%</div>
+            <div style="font-size:${FS.subtitulo}; font-weight:800; color:${ws.pctConforme >= 90 ? '#059669' : '#DC2626'};">${ws.pctConforme.toFixed(1)}%</div>
           </div>
         </div>
-        ${(ws.bajoRango + ws.sobreRango) > 0 ? `
+        ${filasPeso ? `
+          <table style="width:100%; border-collapse:collapse; font-size:${FS.meta};">
+            <tr style="background:#F8FAFC; color:#475569; font-weight:700;">
+              <td style="padding:4px 8px;">Calibre</td>
+              <td style="padding:4px 8px; text-align:center;">Cajas</td>
+              <td style="padding:4px 8px; text-align:right;">Bruto</td>
+              <td style="padding:4px 8px; text-align:right;">Neto</td>
+              <td style="padding:4px 8px; text-align:center;">Rango bruto</td>
+              <td style="padding:4px 8px; text-align:center;">Bajo</td>
+              <td style="padding:4px 8px; text-align:center;">Sobre</td>
+              <td style="padding:4px 8px; text-align:right;">Conforme</td>
+            </tr>
+            ${filasPeso}
+          </table>` : ''}
+        ${criticos.length > 0 ? `
           <div style="margin-top:8px; background:#FEF2F2; border:1px solid #FCA5A5; color:#991B1B; padding:5px 10px; border-radius:5px; font-size:${FS.meta};">
-            ${ws.bajoRango} caja(s) bajo el mínimo y ${ws.sobreRango} sobre el máximo del rango establecido.
+            <strong>Revisar en línea:</strong>
+            ${criticos.map(c => `calibre ${esc(c.caliber)}${c.line ? ` (${esc(c.line)})` : ''} ${c.bajoRango > c.sobreRango ? 'llenando bajo el mínimo' : 'sobre el máximo'}`).join(' · ')}.
           </div>` : ''}
       </div>` : '';
 
@@ -509,6 +545,9 @@ export class PDFReportGenerator {
                   <span style="font-size: 12px; color: #475569; background: #F1F5F9; padding: 2px 8px; border-radius: 4px; font-weight: 600;">Diámetro: ${esc(box.diameterMm || 'N/A')} | Peso: ${esc(box.weightGr || 'N/A')}</span>
                   ${box.totalFrutos != null
                     ? `<span style="font-size: 12px; color: #92400E; background: #FEF3C7; padding: 2px 8px; border-radius: 4px; font-weight: 700;">${box.totalFrutos} frutos evaluados</span>`
+                    : ''}
+                  ${box.serie
+                    ? `<span style="font-size: 12px; color: #065F46; background: #ECFDF5; padding: 2px 8px; border-radius: 4px; font-weight: 700;">Etiqueta ${esc(box.serie)}</span>`
                     : ''}
                 </div>
               </div>

@@ -2,7 +2,7 @@
  * Google Apps Script — FRUSTOCK Procesos
  * Respaldo de inspecciones de packing en Google Sheets.
  *
- * INSTALACIÓN
+ * INSTALACIÓN (primera vez)
  * 1. Crea una planilla nueva en Google Sheets.
  * 2. Extensiones → Apps Script → borra todo y pega este código.
  * 3. Guarda (Ctrl+S).
@@ -11,7 +11,15 @@
  *    - Quién tiene acceso: Cualquier persona
  * 5. Copia la URL que termina en /exec y pégala en la app (Ajustes → Respaldo).
  *
- * El script crea solas las hojas Procesos, Cajas y Bitacora con sus encabezados.
+ * ACTUALIZACIÓN (si ya lo tenías instalado)
+ * 1. Extensiones → Apps Script → borra todo y pega este código.
+ * 2. Guarda (Ctrl+S).
+ * 3. Implementar → Administrar implementaciones → lápiz → Versión: Nueva versión
+ *    → Implementar. La URL /exec NO cambia, no hay que tocar la app.
+ *
+ * El script crea solas las hojas Procesos, Cajas y Bitacora con sus encabezados,
+ * y si la hoja Cajas es de una versión anterior le agrega la columna que falta
+ * sin descuadrar los datos ya guardados.
  */
 
 // Debe coincidir con el token configurado en la app (deja "" para no exigirlo)
@@ -22,7 +30,7 @@ function jsonResponse_(obj) {
     .setMimeType(ContentService.MimeType.JSON);
 }
 
-/** Obtiene (o crea) una hoja con sus encabezados */
+/** Obtiene (o crea) una hoja con sus encabezados, poniéndola al día si es vieja */
 function getSheet_(nombre, encabezados) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   let sheet = ss.getSheetByName(nombre);
@@ -31,6 +39,8 @@ function getSheet_(nombre, encabezados) {
     sheet.appendRow(encabezados);
     sheet.getRange(1, 1, 1, encabezados.length).setFontWeight("bold").setBackground("#F1F5F9");
     sheet.setFrozenRows(1);
+  } else {
+    migrarHoja_(sheet, encabezados);
   }
   return sheet;
 }
@@ -39,16 +49,43 @@ const COLS_PROCESO = [
   "Folio", "N° Proceso", "Especie", "Variedad", "Categoría", "Productor", "Cód. Productor",
   "CSG", "SDP", "Lote", "Fecha Recepción", "Kg Totales", "Inspector", "Veredicto",
   "Nota Veredicto", "Cajas Total", "Aprobadas", "Objetadas", "Madurez",
-  "Pesos Total", "Peso Promedio", "Pesos Fuera Rango", "Rango Peso", "Creado", "Actualizado"
+  "Pesos Total", "Peso Promedio", "Peso Neto Promedio", "Tara", "Neto Objetivo",
+  "Pesos Fuera Rango", "Rango Peso", "Pesos por Calibre", "Creado", "Actualizado"
 ];
 
 const COLS_CAJA = [
-  "Folio", "N° Proceso", "Caja", "Calibre", "Rótulo", "Programa", "Diámetro", "Peso",
-  "Color", "Total Frutos", "Estado", "Motivos", "Defectos", "N° Fotos", "Observaciones",
-  "Inspector", "Registrado", "Editado"
+  "Folio", "N° Proceso", "Caja", "Serie Etiqueta", "Calibre", "Rótulo", "Programa",
+  "Diámetro", "Peso", "Color", "Total Frutos", "Estado", "Motivos", "Defectos",
+  "N° Fotos", "Observaciones", "Inspector", "Registrado", "Editado"
 ];
 
 const COLS_BITACORA = ["Fecha", "Inspector", "Acción", "Detalle", "N° Proceso"];
+
+/**
+ * Pone al día una hoja creada por una versión anterior del script.
+ * Inserta las columnas que falten en su posición correcta, de modo que las
+ * filas ya guardadas no se descuadren. Si no reconoce la hoja, no la toca.
+ */
+function migrarHoja_(hoja, columnas) {
+  const ultima = hoja.getLastColumn();
+  if (ultima === 0) return;
+  const actuales = hoja.getRange(1, 1, 1, ultima).getValues()[0].map(v => String(v).trim());
+
+  for (let i = 0; i < columnas.length; i++) {
+    const esperada = columnas[i];
+    if (actuales[i] === esperada) continue;
+    if (actuales.indexOf(esperada) >= 0) continue;   // está, pero en otro orden: no reordenamos
+
+    // Falta esta columna: insertarla en su posición
+    if (i === 0) hoja.insertColumnBefore(1);
+    else hoja.insertColumnAfter(i);
+    hoja.getRange(1, i + 1)
+      .setValue(esperada)
+      .setFontWeight("bold")
+      .setBackground("#F1F5F9");
+    actuales.splice(i, 0, esperada);
+  }
+}
 
 function doPost(e) {
   const lock = LockService.getScriptLock();
@@ -68,7 +105,8 @@ function doPost(e) {
         p.folio, p.numero, p.especie, p.variedad, p.categoria, p.productor, p.codigoProductor,
         p.csg, p.sdp, p.lote, p.fechaRecepcion, p.kgTotales, p.inspector, p.veredicto,
         p.notaVeredicto, p.cajasTotal, p.cajasAprobadas, p.cajasObjetadas, p.madurez,
-        p.pesosTotal, p.pesoPromedio, p.pesosFueraRango, p.pesoRango, p.creadoEn, p.actualizadoEn
+        p.pesosTotal, p.pesoPromedio, p.pesoNetoPromedio, p.taraKg, p.netoObjetivoKg,
+        p.pesosFueraRango, p.pesoRango, p.pesosPorCalibre, p.creadoEn, p.actualizadoEn
       ];
 
       const datos = hoja.getDataRange().getValues();
@@ -96,9 +134,9 @@ function doPost(e) {
       }
 
       const filas = payload.cajas.map(c => [
-        c.folio, c.numeroProceso, c.caja, c.calibre, c.rotulo, c.programa, c.diametro, c.peso,
-        c.color, c.totalFrutos, c.estado, c.motivos, c.defectos, c.fotos, c.observaciones,
-        c.inspector, c.registrado, c.editado
+        c.folio, c.numeroProceso, c.caja, c.serie, c.calibre, c.rotulo, c.programa,
+        c.diametro, c.peso, c.color, c.totalFrutos, c.estado, c.motivos, c.defectos,
+        c.fotos, c.observaciones, c.inspector, c.registrado, c.editado
       ]);
       hoja.getRange(hoja.getLastRow() + 1, 1, filas.length, COLS_CAJA.length).setValues(filas);
     }

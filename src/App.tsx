@@ -21,6 +21,8 @@ export const App: React.FC = () => {
   const [isQROpen, setIsQROpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [qrPrefill, setQrPrefill] = useState<Partial<ProcessData> | null>(null);
+  // Etiqueta leída mientras hay un proceso abierto: alimenta el muestreo
+  const [qrCaja, setQrCaja] = useState<QRPackingPayload | null>(null);
 
   useEffect(() => {
     if (!autorizado) return;
@@ -53,6 +55,20 @@ export const App: React.FC = () => {
   };
 
   const handleQRApply = (payload: QRPackingPayload) => {
+    // Con un proceso ya abierto la etiqueta describe UNA CAJA de ese proceso:
+    // se manda al muestreo en vez de reiniciar el formulario y perder el avance.
+    if (activeProcess) {
+      setQrCaja(payload);
+      setCurrentStep('sampling');
+      AuditLog.registrar(
+        'Lectura QR',
+        `Caja ${payload.boxSerial ?? 's/n'} · calibre ${payload.caliber ?? '—'}`,
+        activeProcess.processNumber
+      );
+      return;
+    }
+
+    // Sin proceso abierto la etiqueta sirve para crearlo
     const datos = QRScannerService.toProcessData(payload);
     setQrPrefill(datos);
     AuditLog.registrar('Lectura QR', `Etiqueta leída · proceso ${datos.processNumber ?? 's/n'}`);
@@ -75,7 +91,11 @@ export const App: React.FC = () => {
       />
 
       {isQROpen && (
-        <QRScanPanel onClose={() => setIsQROpen(false)} onApply={handleQRApply} />
+        <QRScanPanel
+          onClose={() => setIsQROpen(false)}
+          onApply={handleQRApply}
+          modo={activeProcess ? 'caja' : 'proceso'}
+        />
       )}
 
       {isSettingsOpen && (
@@ -96,6 +116,9 @@ export const App: React.FC = () => {
             process={activeProcess}
             onUpdateProcess={handleUpdateProcess}
             onGoToSummary={() => setCurrentStep('summary')}
+            qrCaja={qrCaja}
+            onQrConsumido={() => setQrCaja(null)}
+            onAbrirEscaner={() => setIsQROpen(true)}
           />
         )}
 

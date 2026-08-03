@@ -146,7 +146,52 @@ export class QRScannerService {
     return {
       ...existingBox,
       caliber: p.caliber ? `Calibre ${p.caliber}` : existingBox.caliber,
+      serie: p.boxSerial ?? existingBox.serie,
       qrPayload: { ...p }
     };
+  }
+
+  /**
+   * Ubica el calibre de la etiqueta dentro de una tabla de calibres.
+   * La etiqueta puede traer el calibre de la norma ("1X", "105") o el rótulo
+   * comercial de un programa como Costco ("24"), así que se buscan ambos.
+   */
+  static buscarIndiceCalibre(
+    calibreEtiqueta: string | undefined,
+    tabla: { caliber: string; costcoLabel?: string }[]
+  ): number {
+    if (!calibreEtiqueta) return -1;
+    const objetivo = String(calibreEtiqueta).replace(/calibre/i, '').trim().toUpperCase();
+    if (!objetivo) return -1;
+
+    const porNorma = tabla.findIndex(c => c.caliber.toUpperCase() === objetivo);
+    if (porNorma >= 0) return porNorma;
+
+    return tabla.findIndex(c => (c.costcoLabel ?? '').toUpperCase() === objetivo);
+  }
+
+  /**
+   * Compara la etiqueta con el proceso abierto.
+   * Devuelve las diferencias encontradas para poder avisar antes de aplicarla:
+   * escanear una caja de otro proceso mezclaría datos de dos lotes distintos.
+   */
+  static diferenciasConProceso(p: QRPackingPayload, proceso: ProcessData): string[] {
+    const dif: string[] = [];
+    const distinto = (a?: string, b?: string) =>
+      Boolean(a && b && String(a).trim().toUpperCase() !== String(b).trim().toUpperCase());
+
+    if (distinto(p.processNumber, proceso.processNumber)) {
+      dif.push(`N° de proceso: la etiqueta dice ${p.processNumber} y el proceso abierto es ${proceso.processNumber}`);
+    }
+    if (distinto(p.lot, proceso.lot)) {
+      dif.push(`Lote: la etiqueta dice ${p.lot} y el proceso abierto es ${proceso.lot}`);
+    }
+    if (p.species && p.species !== proceso.species) {
+      dif.push(`Especie: la etiqueta dice ${p.species} y el proceso abierto es ${proceso.species}`);
+    }
+    if (distinto(p.producerCode, proceso.producerCode)) {
+      dif.push(`Productor: la etiqueta dice ${p.producerCode} y el proceso abierto es ${proceso.producerCode}`);
+    }
+    return dif;
   }
 }

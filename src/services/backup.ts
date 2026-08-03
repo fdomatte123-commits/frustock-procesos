@@ -1,4 +1,4 @@
-import { ProcessData, calcularEstadisticasPeso, getCategoriaLabel } from '../types/process';
+import { ProcessData, calcularEstadisticasPeso, calcularEstadisticasGrupo, getCategoriaLabel } from '../types/process';
 import { AuditLog, SessionService, LogEvent } from './session';
 
 /**
@@ -68,6 +68,17 @@ export const BackupService = {
         pesoPromedio: stats ? Number(stats.promedio.toFixed(3)) : '',
         pesosFueraRango: stats ? stats.bajoRango + stats.sobreRango : '',
         pesoRango: process.weightControl ? `${process.weightControl.minKg}-${process.weightControl.maxKg}` : '',
+        taraKg: process.weightControl?.taraKg ?? '',
+        netoObjetivoKg: process.weightControl?.netoObjetivoKg ?? '',
+        pesoNetoPromedio: stats && process.weightControl?.taraKg != null
+          ? Number((stats.promedio - process.weightControl.taraKg).toFixed(3))
+          : '',
+        // "72(x):14 cajas 16.259 kg 43% | 105:14 cajas 16.218 kg 50%"
+        pesosPorCalibre: (process.weightControl?.grupos ?? []).map(g => {
+          const s = calcularEstadisticasGrupo(g, process.species,
+            process.weightControl?.netoObjetivoKg, process.weightControl?.taraKg);
+          return `${g.caliber}${g.line ? `(${g.line})` : ''}:${s.total} cajas ${s.promedio.toFixed(3)}kg ${s.pctConforme.toFixed(0)}%`;
+        }).join(' | '),
         creadoEn: process.createdAt,
         actualizadoEn: process.updatedAt
       },
@@ -77,6 +88,7 @@ export const BackupService = {
         caja: b.boxNumber,
         calibre: b.caliber,
         rotulo: b.caliberLabel || '',
+        serie: b.serie || '',
         programa: b.program || '',
         diametro: b.diameterMm || '',
         peso: b.weightGr || '',

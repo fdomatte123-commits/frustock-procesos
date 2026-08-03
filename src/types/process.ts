@@ -49,13 +49,73 @@ export interface MaturityReading {
 /** Veredicto del lote completo, definido por el inspector */
 export type ProcessVerdict = 'PENDIENTE' | 'ACEPTADO' | 'OBJETADO';
 
+/**
+ * Un bloque de pesos de la planilla del packing: una fila de calibre.
+ * La planilla anota los pesos agrupados por calibre y por línea de embalaje,
+ * y es ahí donde se ve si una línea viene descalibrada. Un promedio global lo
+ * esconde: en la planilla del 3-07-2026 el calibre 64 iba 253 g sobre el 72.
+ */
+export interface WeightGroup {
+  id: string;
+  caliber: string;      // "72", "105", "1X"…
+  line?: string;        // marca de línea de embalaje (la "x" de la planilla)
+  weights: number[];    // pesos BRUTOS en kg, tal como los anota el pesador
+}
+
 /** Control de peso de cajas (registro independiente del muestreo) */
 export interface WeightControl {
   formatLabel: string;   // ej. "Caja 10 kg palta"
   minKg: number;
   maxKg: number;
-  weights: number[];     // pesos ingresados
+  weights: number[];     // lista plana: se mantiene por compatibilidad
   updatedAt: string;
+  /** Pesos agrupados por calibre y línea (formato nuevo) */
+  grupos?: WeightGroup[];
+  /** Neto que debe tener la caja al embalar: etiqueta + margen de merma */
+  netoObjetivoKg?: number;
+  /** Peso de la caja vacía; el pesador anota el bruto */
+  taraKg?: number;
+}
+
+/** Neto objetivo por defecto: 15,2 kg de etiqueta + 100 g de merma en tránsito */
+export const NETO_OBJETIVO_DEFECTO = 15.300;
+/** Tara por defecto de la caja de cartón de cítricos */
+export const TARA_DEFECTO = 0.850;
+
+/**
+ * Peso máximo de un fruto del calibre, en kg, leído de la tabla de calibres.
+ * "188 - 230" → 0.230
+ */
+export function pesoFrutoMaxKg(species: Species, caliber: string, program: CaliberProgram = 'NORMAL'): number | null {
+  const objetivo = String(caliber).replace(/calibre/i, '').trim().toUpperCase();
+  const tabla = getCalibers(species, program);
+  const spec = tabla.find(c => c.caliber.toUpperCase() === objetivo)
+            ?? tabla.find(c => (c.costcoLabel ?? '').toUpperCase() === objetivo);
+  if (!spec) return null;
+  const nums = String(spec.weightGr).match(/\d+/g);
+  if (!nums || nums.length === 0) return null;
+  return parseInt(nums[nums.length - 1], 10) / 1000;
+}
+
+/**
+ * Rango de peso BRUTO aceptable para un calibre.
+ *
+ * El mínimo es igual para todos: el neto que debe salir del packing más la tara.
+ * El máximo sube según el calibre porque el llenado no se puede afinar más que
+ * de a un fruto: en calibre 40 un fruto pesa 418 g y en calibre 113 solo 120 g,
+ * así que exigirles la misma ventana sería imposible de cumplir en los grandes.
+ */
+export function rangoPesoCalibre(
+  species: Species,
+  caliber: string,
+  netoObjetivoKg = NETO_OBJETIVO_DEFECTO,
+  taraKg = TARA_DEFECTO,
+  program: CaliberProgram = 'NORMAL'
+): { min: number; max: number; pesoFruto: number | null } {
+  const min = netoObjetivoKg + taraKg;
+  const fruto = pesoFrutoMaxKg(species, caliber, program);
+  // Sin dato del calibre se usa una ventana de 250 g, que es lo típico en cítricos
+  return { min, max: min + (fruto ?? 0.250), pesoFruto: fruto };
 }
 
 /** Formato de caja con su rango de peso aceptable */
@@ -88,6 +148,33 @@ export interface WeightStats {
   pctConforme: number;
 }
 
+/** Estadísticas de un bloque de calibre, contra su propio rango */
+export interface WeightGroupStats extends WeightStats {
+  caliber: string;
+  line?: string;
+  rangoMin: number;
+  rangoMax: number;
+  pesoFruto: number | null;
+}
+
+export function calcularEstadisticasGrupo(
+  g: WeightGroup,
+  species: Species,
+  netoObjetivoKg = NETO_OBJETIVO_DEFECTO,
+  taraKg = TARA_DEFECTO
+): WeightGroupStats {
+  const { min, max, pesoFruto } = rangoPesoCalibre(species, g.caliber, netoObjetivoKg, taraKg);
+  const base = calcularEstadisticasPeso({
+    formatLabel: '', minKg: min, maxKg: max, weights: g.weights, updatedAt: ''
+  });
+  return { ...base, caliber: g.caliber, line: g.line, rangoMin: min, rangoMax: max, pesoFruto };
+}
+
+/** Todos los pesos de todos los grupos, en una sola lista */
+export function pesosPlanos(grupos: WeightGroup[] | undefined): number[] {
+  return (grupos ?? []).flatMap(g => g.weights);
+}
+
 export function calcularEstadisticasPeso(w: WeightControl): WeightStats {
   const pesos = w.weights.filter(p => Number.isFinite(p) && p > 0);
   const total = pesos.length;
@@ -115,15 +202,77 @@ export function calcularEstadisticasPeso(w: WeightControl): WeightStats {
  * Acepta separación por comas, espacios, saltos de línea, punto y coma o tabulaciones,
  * y tanto punto como coma decimal. Ignora texto que no sea numérico.
  */
-export function parsearPesos(texto: string): number[] {
-  if (!texto) return [];
+export interface LecturaPesos {
+  /** Pesos aceptados, en kilos */
+  pesos: number[];
+  /** Números que se descartaron por no poder ser el peso de una caja */
+  descartados: number[];
+}
+
+/**
+ * Quita la numeración y las etiquetas que agregan las transcripciones.
+ *
+ * Una IA transcribiendo la foto de la planilla casi siempre devuelve una lista
+ * numerada ("1. 17,2") o rotulada ("Caja 1: 17,2"). Sin esto, el 1 y el 2
+ * entraban como si fueran pesos.
+ */
+function limpiarMarcadoresDeLista(texto: string): string {
   return texto
-    .replace(/,(\d{1,3})(?!\d)/g, '.$1')      // coma decimal → punto (17,2 → 17.2)
+    // Líneas de resumen que agrega una IA: "TOTAL: 24", "Promedio: 17,25".
+    // Sin esto el 24 entraría como si fuera el peso de una caja.
+    .replace(
+      /\b(?:total(?:es)?|cantidad|conteo|suma|promedio|media|m[ií]nimo|m[áa]ximo|rango|n[°º]?\s*de\s*(?:cajas|pesos|datos|registros))\b\s*[:=]?\s*\d+(?:[.,]\d+)?/gi,
+      ' '
+    )
+    // "Caja 12:", "caja 12 =", "N° 12 -", "Nro 12"
+    .replace(/\b(?:caja|cajas|box|n[°ºo]|nro\.?|num\.?|item)\s*\d{1,4}\s*[:=\-.)]?/gi, ' ')
+    // "1.", "2)", "3 -" al inicio de línea o tras un espacio, seguidos de un número
+    .replace(/(^|[\n\r\s])\d{1,3}\s*[.)\-]\s+(?=\d)/g, '$1');
+}
+
+/**
+ * Interpreta un bloque de texto con pesos de cajas, en kilos.
+ *
+ * FORMATO ACEPTADO
+ *   · Separadores: espacio, salto de línea, coma, punto y coma, tabulación, pipe.
+ *   · Decimales: punto o coma  →  17.2  ·  17,2  ·  17,200
+ *   · Unidades pegadas o sueltas: "17,2 kg", "17.2kg"
+ *   · Listas numeradas y rótulos de caja se ignoran.
+ *
+ * Los valores imposibles para el formato (la numeración de la lista, o un
+ * decimal perdido que convierte 17,2 en 172) se descartan y se informan aparte.
+ * Un peso legítimamente fuera de rango SÍ entra: es justamente lo que hay que ver.
+ */
+export function parsearPesosDetallado(
+  texto: string,
+  rango?: { minKg: number; maxKg: number }
+): LecturaPesos {
+  if (!texto) return { pesos: [], descartados: [] };
+
+  const numeros = limpiarMarcadoresDeLista(texto)
+    .replace(/,(\d{1,3})(?!\d)/g, '.$1')       // coma decimal → punto (17,2 → 17.2)
     .split(/[\s,;|]+/)
-    .map(t => t.replace(/[^0-9.]/g, ''))       // limpiar unidades ("17.2kg" → "17.2")
+    .map(t => t.replace(/[^0-9.]/g, ''))        // limpiar unidades ("17.2kg" → "17.2")
     .filter(t => t !== '' && t !== '.')
     .map(t => parseFloat(t))
     .filter(n => Number.isFinite(n) && n > 0);
+
+  // Banda de lo posible: holgada respecto al rango, para no descartar un peso real
+  const min = rango && rango.minKg > 0 ? rango.minKg * 0.6 : 1;
+  const max = rango && rango.maxKg > 0 ? rango.maxKg * 1.4 : 40;
+
+  const pesos: number[] = [];
+  const descartados: number[] = [];
+  for (const n of numeros) {
+    if (n >= min && n <= max) pesos.push(n);
+    else descartados.push(n);
+  }
+  return { pesos, descartados };
+}
+
+/** Versión simple: solo los pesos aceptados */
+export function parsearPesos(texto: string, rango?: { minKg: number; maxKg: number }): number[] {
+  return parsearPesosDetallado(texto, rango).pesos;
 }
 
 /**
@@ -169,6 +318,8 @@ export interface BoxSampling {
   program?: CaliberProgram;
   caliber: string;
   caliberLabel?: string;
+  /** N° de serie impreso en la etiqueta de packing (campo ID del QR) */
+  serie?: string;
   diameterMm?: string;
   weightGr?: string;
   colorGrade?: number | string;

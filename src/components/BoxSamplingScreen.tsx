@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { Camera, Plus, Trash2, CheckCircle2, AlertOctagon, FileText, Image as ImageIcon, Check, ShieldAlert, Pencil, Hash } from 'lucide-react';
+import { Camera, Plus, Trash2, CheckCircle2, AlertOctagon, FileText, Image as ImageIcon, Check, ShieldAlert, Pencil, Hash, QrCode } from 'lucide-react';
 import {
   ProcessData,
   BoxSampling,
@@ -20,12 +20,18 @@ import {
 } from '../types/process';
 import { ProcessStorageService, compressImage } from '../services/storage';
 import { SessionService, AuditLog } from '../services/session';
+import { QRScannerService, QRPackingPayload } from '../services/qrScanner';
 import { SearchableSelect, SelectOption } from './SearchableSelect';
 
 interface BoxSamplingScreenProps {
   process: ProcessData;
   onUpdateProcess: (updated: ProcessData) => void;
   onGoToSummary: () => void;
+  /** Etiqueta recién leída para autocompletar la caja en curso */
+  qrCaja?: QRPackingPayload | null;
+  /** Avisa que la etiqueta ya se aplicó, para no volver a procesarla */
+  onQrConsumido?: () => void;
+  onAbrirEscaner?: () => void;
 }
 
 // Límite de fotos por caja: protege la cuota de almacenamiento del dispositivo
@@ -48,7 +54,10 @@ const DEFECTOS_VETO_ABSOLUTO = ['Pudrición'];
 export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
   process,
   onUpdateProcess,
-  onGoToSummary
+  onGoToSummary,
+  qrCaja,
+  onQrConsumido,
+  onAbrirEscaner
 }) => {
   const currentBoxNumber = (process.boxes ? process.boxes.length : 0) + 1;
   const isMandarin = process.species === 'Mandarina';
@@ -80,6 +89,8 @@ export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
   // Edición de una caja ya registrada
   const [editandoId, setEditandoId] = useState<string | null>(null);
   const [editandoNumero, setEditandoNumero] = useState<number | null>(null);
+  // Etiqueta aplicada a la caja en curso (trazabilidad)
+  const [etiqueta, setEtiqueta] = useState<QRPackingPayload | null>(null);
 
   // Al cambiar de programa/especie, reajustar índices que podrían quedar fuera de rango
   useEffect(() => {
@@ -114,6 +125,71 @@ export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
       };
     }));
   };
+
+  // -------------------------------------------------------------
+  // AUTOCOMPLETADO DESDE LA ETIQUETA DE PACKING
+  // -------------------------------------------------------------
+  // El calibre se aplica en dos pasos: cambiar de programa dispara el efecto
+  // que reinicia el índice a 0, así que se deja pendiente y se resuelve después.
+  const [calibrePendiente, setCalibrePendiente] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!calibrePendiente) return;
+    const idx = QRScannerService.buscarIndiceCalibre(calibrePendiente, calibers);
+    if (idx >= 0) {
+      setSelectedCaliberIndex(idx);
+      setTotalEditado(false);   // el total vuelve a seguir al calibre leído
+    }
+    setCalibrePendiente(null);
+  }, [calibrePendiente, calibers]);
+
+  useEffect(() => {
+    if (!qrCaja) return;
+
+    // Escanear una caja de otro proceso mezclaría dos lotes en el mismo informe
+    const dif = QRScannerService.diferenciasConProceso(qrCaja, process);
+    if (dif.length > 0) {
+      const seguir = window.confirm(
+        'La etiqueta no coincide con el proceso abierto:\n\n· ' + dif.join('\n· ') +
+        '\n\n¿Aplicarla de todas formas?'
+      );
+      if (!seguir) {
+        showNotification('Etiqueta descartada: pertenece a otro proceso.');
+        AuditLog.registrar('Etiqueta descartada', dif.join(' | '), process.processNumber);
+        onQrConsumido?.();
+        return;
+      }
+    }
+
+    // El calibre puede venir en la tabla de otro programa (ej. rótulo Costco)
+    let encontrado = QRScannerService.buscarIndiceCalibre(qrCaja.caliber, calibers) >= 0;
+    if (!encontrado && qrCaja.caliber) {
+      for (const prog of programas) {
+        if (prog.value === program) continue;
+        if (QRScannerService.buscarIndiceCalibre(qrCaja.caliber, getCalibers(process.species, prog.value)) >= 0) {
+          setProgram(prog.value);
+          encontrado = true;
+          break;
+        }
+      }
+    }
+
+    if (qrCaja.caliber) setCalibrePendiente(qrCaja.caliber);
+    setEtiqueta(qrCaja);
+
+    if (qrCaja.caliber && !encontrado) {
+      showNotification(`El calibre ${qrCaja.caliber} no está en la tabla de ${process.species}. Selecciónalo a mano.`);
+    } else {
+      showNotification(`Etiqueta aplicada · caja ${qrCaja.boxSerial ?? 's/n'}${qrCaja.caliber ? ` · calibre ${qrCaja.caliber}` : ''}`);
+    }
+    AuditLog.registrar(
+      'Etiqueta aplicada a la caja',
+      `Caja ${qrCaja.boxSerial ?? 's/n'} · calibre ${qrCaja.caliber ?? '—'}`,
+      process.processNumber
+    );
+    onQrConsumido?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [qrCaja]);
 
   const cambiarTotal = (texto: string) => {
     const limpio = texto.replace(/[^0-9]/g, '');
@@ -338,6 +414,8 @@ export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
       weightGr: `${calObj.weightGr} gr`,
       colorGrade: selectedColorGrade,
       colorName: colorObj?.name,
+      serie: etiqueta?.boxSerial,
+      qrPayload: etiqueta ? { ...etiqueta } : undefined,
       totalFrutos: totalValido ? totalFrutosNum : undefined,
       status: evaluationResult.status,
       statusReasons: evaluationResult.reasons,
@@ -386,6 +464,7 @@ export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
       setNotes('');
       setDefectValue('');
       setTotalEditado(false);   // la caja siguiente vuelve a seguir al calibre
+      setEtiqueta(null);        // cada caja lleva su propia etiqueta
     }
   };
 
@@ -399,6 +478,7 @@ export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
     setDefects([...(b.defects || [])]);
     setNotes(b.notes || '');
     setDefectValue('');
+    setEtiqueta((b.qrPayload as QRPackingPayload | undefined) ?? null);
     // El total guardado manda: así los porcentajes de la caja no cambian al editarla
     if (b.totalFrutos != null) {
       setTotalFrutos(String(b.totalFrutos));
@@ -418,6 +498,7 @@ export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
     setNotes('');
     setDefectValue('');
     setTotalEditado(false);   // la caja siguiente vuelve a seguir al calibre
+    setEtiqueta(null);        // cada caja lleva su propia etiqueta
     showNotification('Edición cancelada.');
   };
 
@@ -516,6 +597,49 @@ export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
             </ul>
           </div>
         )}
+
+        {/* Etiqueta de packing leída para esta caja */}
+        {etiqueta ? (
+          <div style={{
+            background: 'rgba(5,150,105,0.10)', border: '1px solid #059669', borderRadius: '12px',
+            padding: '11px 14px', marginBottom: '18px',
+            display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap'
+          }}>
+            <QrCode size={20} color="#34D399" style={{ flexShrink: 0 }} />
+            <div style={{ flex: 1, minWidth: '160px' }}>
+              <div style={{ fontSize: '0.8rem', fontWeight: 800, color: '#E2E8F0' }}>
+                Caja {etiqueta.boxSerial ?? 's/n'}
+              </div>
+              <div style={{ fontSize: '0.72rem', color: '#94A3B8', marginTop: '2px' }}>
+                Etiqueta leída{etiqueta.caliber ? ` · calibre ${etiqueta.caliber}` : ''}
+                {etiqueta.labelCategory ? ` · ${etiqueta.labelCategory}` : ''}
+                {etiqueta.lot ? ` · lote ${etiqueta.lot}` : ''}
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              {onAbrirEscaner && (
+                <button type="button" onClick={onAbrirEscaner}
+                  style={{ background: 'rgba(5,150,105,0.2)', border: '1px solid #059669', color: '#34D399',
+                           borderRadius: '8px', padding: '6px 11px', fontSize: '0.72rem', fontWeight: 700,
+                           cursor: 'pointer', fontFamily: 'inherit' }}>
+                  Leer otra
+                </button>
+              )}
+              <button type="button" onClick={() => { setEtiqueta(null); showNotification('Etiqueta quitada de esta caja.'); }}
+                style={{ background: 'transparent', border: '1px solid #475569', color: '#94A3B8',
+                         borderRadius: '8px', padding: '6px 11px', fontSize: '0.72rem',
+                         cursor: 'pointer', fontFamily: 'inherit' }}>
+                Quitar
+              </button>
+            </div>
+          </div>
+        ) : onAbrirEscaner ? (
+          <button type="button" onClick={onAbrirEscaner} className="btn-secondary"
+            style={{ width: '100%', justifyContent: 'center', marginBottom: '18px' }}>
+            <QrCode size={18} color="#34D399" />
+            <span>Leer etiqueta de esta caja</span>
+          </button>
+        ) : null}
 
         {/* Programa / mercado de calibres (mandarina: Costco · palta: USA/Europa) */}
         {programas.length > 1 && (

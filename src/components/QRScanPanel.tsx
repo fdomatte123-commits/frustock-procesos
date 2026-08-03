@@ -5,6 +5,11 @@ import { QRScannerService, QRPackingPayload } from '../services/qrScanner';
 interface Props {
   onClose: () => void;
   onApply: (payload: QRPackingPayload) => void;
+  /**
+   * 'proceso' → sin proceso abierto: la etiqueta sirve para crearlo.
+   * 'caja'    → con proceso abierto: la etiqueta describe una caja de ese proceso.
+   */
+  modo?: 'proceso' | 'caja';
 }
 
 /**
@@ -12,7 +17,8 @@ interface Props {
  * El operario escanea el QR con la cámara del teléfono, y pega aquí el contenido.
  * Al integrar una cámara nativa (Fase 2), solo hay que alimentar `setTexto`.
  */
-export const QRScanPanel: React.FC<Props> = ({ onClose, onApply }) => {
+export const QRScanPanel: React.FC<Props> = ({ onClose, onApply, modo = 'proceso' }) => {
+  const esCaja = modo === 'caja';
   const [texto, setTexto] = useState('');
   const [preview, setPreview] = useState<QRPackingPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -56,7 +62,9 @@ export const QRScanPanel: React.FC<Props> = ({ onClose, onApply }) => {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <QrCode size={20} color="#34D399" />
-            <h3 style={{ fontSize: '1.05rem', fontWeight: 800, color: 'white' }}>Leer etiqueta de packing</h3>
+            <h3 style={{ fontSize: '1.05rem', fontWeight: 800, color: 'white' }}>
+              {esCaja ? 'Leer etiqueta de la caja' : 'Leer etiqueta de packing'}
+            </h3>
           </div>
           <button type="button" onClick={onClose} style={{ background: 'transparent', border: 'none', color: '#94A3B8', cursor: 'pointer' }}>
             <X size={20} />
@@ -65,7 +73,9 @@ export const QRScanPanel: React.FC<Props> = ({ onClose, onApply }) => {
 
         <p style={{ fontSize: '0.8rem', color: '#94A3B8', marginBottom: '12px', lineHeight: 1.5 }}>
           Escanea el QR de la caja con la cámara de tu teléfono y pega aquí el contenido.
-          Se completarán automáticamente los datos del proceso.
+          {esCaja
+            ? ' Se aplicará el calibre a la caja que estás muestreando, sin tocar el proceso en curso.'
+            : ' Se completarán automáticamente los datos del proceso.'}
         </p>
 
         <div style={{ display: 'flex', gap: '8px', marginBottom: '10px' }}>
@@ -120,7 +130,7 @@ export const QRScanPanel: React.FC<Props> = ({ onClose, onApply }) => {
             style={{ flex: 2, opacity: preview ? 1 : 0.5 }}
           >
             <Check size={18} />
-            <span>Usar estos datos</span>
+            <span>{esCaja ? 'Aplicar a esta caja' : 'Usar estos datos'}</span>
           </button>
         </div>
       </div>
