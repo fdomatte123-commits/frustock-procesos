@@ -1,5 +1,6 @@
 import type jsPDFType from 'jspdf';
 import { ProcessData, getTolerance, getCategoriaLabel, calcularEstadisticasPeso } from '../types/process';
+import { LOGO_FRUSTOCK_PNG, LOGO_RATIO } from '../assets/logoFrustock';
 
 // jsPDF y html2canvas pesan ~600 kB y solo se usan al exportar.
 // Se cargan bajo demanda para que la app abra rápido en terreno con señal débil.
@@ -44,6 +45,41 @@ const FS = {
 
 export class PDFReportGenerator {
   /**
+   * Marca corporativa en la esquina superior izquierda.
+   * La usan las dos plantillas, así aparece en todas las páginas del informe.
+   */
+  private static membrete(subtitulo: string, altoLogo = 34): string {
+    const anchoLogo = Math.round(altoLogo / LOGO_RATIO);
+    return `
+      <div style="display:flex; align-items:center; gap:10px;">
+        <img src="${LOGO_FRUSTOCK_PNG}" width="${anchoLogo}" height="${altoLogo}"
+             style="width:${anchoLogo}px; height:${altoLogo}px; display:block; flex-shrink:0;" alt="" />
+        <div>
+          <div style="font-family:'Outfit',sans-serif; font-size:16px; font-weight:800; color:#4A4A4A; letter-spacing:.16em; line-height:1;">FRUSTOCK</div>
+          <div style="font-size:${FS.micro}; font-weight:800; color:#94A3B8; letter-spacing:.07em; margin-top:4px;">${subtitulo}</div>
+        </div>
+      </div>`;
+  }
+
+  /**
+   * Precarga la marca una sola vez.
+   * html2canvas captura el DOM tal como está: si la imagen todavía no decodifica,
+   * la página sale sin logo y sin ningún error visible.
+   */
+  private static _logoListo: Promise<void> | null = null;
+  private static precargarLogo(): Promise<void> {
+    if (!this._logoListo) {
+      this._logoListo = new Promise<void>(resolve => {
+        const img = new Image();
+        img.onload = () => resolve();
+        img.onerror = () => resolve();   // sin logo el informe se genera igual
+        img.src = LOGO_FRUSTOCK_PNG;
+      });
+    }
+    return this._logoListo;
+  }
+
+  /**
    * Genera un PDF con exactamente 1 página por caja muestreada.
    * El contenido fluye a su altura natural y se ajusta a la página sin recortar.
    */
@@ -54,7 +90,10 @@ export class PDFReportGenerator {
 
     // Descarga de las librerías pesadas solo cuando realmente se exporta
     if (onProgress) onProgress(1);
-    const { jsPDF, html2canvas } = await cargarLibreriasPDF();
+    const [{ jsPDF, html2canvas }] = await Promise.all([
+      cargarLibreriasPDF(),
+      this.precargarLogo()
+    ]);
 
     const renderContainer = document.createElement('div');
     renderContainer.style.position = 'absolute';
@@ -275,11 +314,8 @@ export class PDFReportGenerator {
       <div style="width:794px; min-height:1123px; padding:34px 30px; box-sizing:border-box; background:#FFF; font-family:'Plus Jakarta Sans',sans-serif; color:#0F172A; display:flex; flex-direction:column;">
         <div style="display:flex; justify-content:space-between; align-items:flex-start; border-bottom:3px solid #F59E0B; padding-bottom:14px; margin-bottom:18px;">
           <div>
-            <div style="display:flex; align-items:center; gap:8px;">
-              <div style="background:#F59E0B; color:#FFF; font-weight:800; font-size:${FS.subtitulo}; padding:4px 10px; border-radius:6px;">FRUSTOCK</div>
-              <span style="font-size:${FS.seccion}; font-weight:800; color:#334155; letter-spacing:.5px;">PROCESOS · RESUMEN DE INSPECCIÓN</span>
-            </div>
-            <h1 style="font-size:${FS.titulo}; margin:8px 0 0; font-weight:800;">Informe de calidad · ${esc(process.species)} ${esc(process.variety)}</h1>
+            ${this.membrete('PROCESOS · RESUMEN DE INSPECCIÓN', 38)}
+            <h1 style="font-size:${FS.titulo}; margin:10px 0 0; font-weight:800;">Informe de calidad · ${esc(process.species)} ${esc(process.variety)}</h1>
             <div style="font-size:${FS.meta}; color:#64748B; margin-top:3px;">Control de calidad de cajas terminadas en packing</div>
           </div>
           <div style="text-align:right;">
@@ -439,11 +475,8 @@ export class PDFReportGenerator {
         <div>
           <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 3px solid #F59E0B; padding-bottom: 14px; margin-bottom: 16px;">
             <div>
-              <div style="display: flex; align-items: center; gap: 8px;">
-                <div style="background: #F59E0B; color: white; font-weight: 800; font-size: 17px; padding: 4px 10px; border-radius: 6px; font-family: 'Outfit', sans-serif;">FRUSTOCK</div>
-                <span style="font-size: 13px; font-weight: 800; color: #334155; letter-spacing: 0.5px;">PROCESOS • INFORME ${especie}</span>
-              </div>
-              <div style="font-size: 11px; color: #64748B; margin-top: 3px;">Control de Calidad Packing • ${esc(process.species)}</div>
+              ${this.membrete(`PROCESOS · INFORME ${especie}`, 34)}
+              <div style="font-size: 11px; color: #64748B; margin-top: 5px;">Control de Calidad Packing • ${esc(process.species)}</div>
             </div>
             <div style="text-align: right;">
               <div style="background: #0F291E; color: #34D399; font-size: 11px; font-weight: 700; padding: 4px 12px; border-radius: 20px; display: inline-block;">PÁGINA ${pageIndex} DE ${totalPages}</div>

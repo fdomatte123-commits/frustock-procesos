@@ -1,8 +1,12 @@
 // Service Worker — FRUSTOCK Procesos
 // Estrategia: app shell offline. Cachea el HTML y los recursos a medida que se usan,
 // así tras la primera carga la app funciona sin conexión en terreno.
-const CACHE = 'frustock-procesos-v1';
-const APP_SHELL = ['/', '/index.html', '/manifest.webmanifest', '/icon.svg', '/favicon.svg'];
+const CACHE = 'frustock-procesos-v2';
+const APP_SHELL = [
+  '/', '/index.html', '/manifest.webmanifest',
+  '/icon.svg', '/favicon.svg',
+  '/icon-192.png', '/icon-512.png', '/apple-touch-icon.png'
+];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
