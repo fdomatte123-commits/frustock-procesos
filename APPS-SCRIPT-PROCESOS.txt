@@ -1,0 +1,125 @@
+/**
+ * Google Apps Script — FRUSTOCK Procesos
+ * Respaldo de inspecciones de packing en Google Sheets.
+ *
+ * INSTALACIÓN
+ * 1. Crea una planilla nueva en Google Sheets.
+ * 2. Extensiones → Apps Script → borra todo y pega este código.
+ * 3. Guarda (Ctrl+S).
+ * 4. Implementar → Nueva implementación → Tipo: Aplicación web
+ *    - Ejecutar como: Yo
+ *    - Quién tiene acceso: Cualquier persona
+ * 5. Copia la URL que termina en /exec y pégala en la app (Ajustes → Respaldo).
+ *
+ * El script crea solas las hojas Procesos, Cajas y Bitacora con sus encabezados.
+ */
+
+// Debe coincidir con el token configurado en la app (deja "" para no exigirlo)
+const API_TOKEN = "";
+
+function jsonResponse_(obj) {
+  return ContentService.createTextOutput(JSON.stringify(obj))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+/** Obtiene (o crea) una hoja con sus encabezados */
+function getSheet_(nombre, encabezados) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(nombre);
+  if (!sheet) {
+    sheet = ss.insertSheet(nombre);
+    sheet.appendRow(encabezados);
+    sheet.getRange(1, 1, 1, encabezados.length).setFontWeight("bold").setBackground("#F1F5F9");
+    sheet.setFrozenRows(1);
+  }
+  return sheet;
+}
+
+const COLS_PROCESO = [
+  "Folio", "N° Proceso", "Especie", "Variedad", "Categoría", "Productor", "Cód. Productor",
+  "CSG", "SDP", "Lote", "Fecha Recepción", "Kg Totales", "Inspector", "Veredicto",
+  "Nota Veredicto", "Cajas Total", "Aprobadas", "Objetadas", "Madurez",
+  "Pesos Total", "Peso Promedio", "Pesos Fuera Rango", "Rango Peso", "Creado", "Actualizado"
+];
+
+const COLS_CAJA = [
+  "Folio", "N° Proceso", "Caja", "Calibre", "Rótulo", "Programa", "Diámetro", "Peso",
+  "Color", "Estado", "Motivos", "Defectos", "N° Fotos", "Observaciones",
+  "Inspector", "Registrado", "Editado"
+];
+
+const COLS_BITACORA = ["Fecha", "Inspector", "Acción", "Detalle", "N° Proceso"];
+
+function doPost(e) {
+  const lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(30000);
+    const payload = JSON.parse(e.postData.contents);
+
+    if (API_TOKEN && payload.token !== API_TOKEN) {
+      return jsonResponse_({ status: "error", message: "Token inválido" });
+    }
+
+    // ---- Proceso (una fila por folio; se actualiza si ya existe) ----
+    if (payload.proceso) {
+      const hoja = getSheet_("Procesos", COLS_PROCESO);
+      const p = payload.proceso;
+      const fila = [
+        p.folio, p.numero, p.especie, p.variedad, p.categoria, p.productor, p.codigoProductor,
+        p.csg, p.sdp, p.lote, p.fechaRecepcion, p.kgTotales, p.inspector, p.veredicto,
+        p.notaVeredicto, p.cajasTotal, p.cajasAprobadas, p.cajasObjetadas, p.madurez,
+        p.pesosTotal, p.pesoPromedio, p.pesosFueraRango, p.pesoRango, p.creadoEn, p.actualizadoEn
+      ];
+
+      const datos = hoja.getDataRange().getValues();
+      let filaExistente = -1;
+      for (let i = 1; i < datos.length; i++) {
+        if (p.folio && String(datos[i][0]) === String(p.folio)) { filaExistente = i + 1; break; }
+      }
+      if (filaExistente > 0) {
+        hoja.getRange(filaExistente, 1, 1, fila.length).setValues([fila]);
+      } else {
+        hoja.appendRow(fila);
+      }
+    }
+
+    // ---- Cajas (se reemplazan las del folio para no duplicar) ----
+    if (payload.cajas && payload.cajas.length > 0) {
+      const hoja = getSheet_("Cajas", COLS_CAJA);
+      const folio = payload.cajas[0].folio;
+
+      if (folio) {
+        const datos = hoja.getDataRange().getValues();
+        for (let i = datos.length - 1; i >= 1; i--) {
+          if (String(datos[i][0]) === String(folio)) hoja.deleteRow(i + 1);
+        }
+      }
+
+      const filas = payload.cajas.map(c => [
+        c.folio, c.numeroProceso, c.caja, c.calibre, c.rotulo, c.programa, c.diametro, c.peso,
+        c.color, c.estado, c.motivos, c.defectos, c.fotos, c.observaciones,
+        c.inspector, c.registrado, c.editado
+      ]);
+      hoja.getRange(hoja.getLastRow() + 1, 1, filas.length, COLS_CAJA.length).setValues(filas);
+    }
+
+    // ---- Bitácora (siempre se agrega al final) ----
+    if (payload.bitacora && payload.bitacora.length > 0) {
+      const hoja = getSheet_("Bitacora", COLS_BITACORA);
+      const filas = payload.bitacora.map(b => [b.fecha, b.inspector, b.accion, b.detalle, b.proceso]);
+      hoja.getRange(hoja.getLastRow() + 1, 1, filas.length, COLS_BITACORA.length).setValues(filas);
+    }
+
+    return jsonResponse_({ status: "success", message: "Respaldo guardado" });
+
+  } catch (error) {
+    return jsonResponse_({ status: "error", message: error.toString() });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** Permite verificar desde el navegador que la implementación está activa */
+function doGet() {
+  return jsonResponse_({ status: "success", message: "Respaldo FRUSTOCK Procesos operativo" });
+}

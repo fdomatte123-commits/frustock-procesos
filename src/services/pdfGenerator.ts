@@ -1,5 +1,5 @@
 import type jsPDFType from 'jspdf';
-import { ProcessData, getTolerance } from '../types/process';
+import { ProcessData, getTolerance, getCategoriaLabel, calcularEstadisticasPeso } from '../types/process';
 
 // jsPDF y html2canvas pesan ~600 kB y solo se usan al exportar.
 // Se cargan bajo demanda para que la app abra rápido en terreno con señal débil.
@@ -186,9 +186,65 @@ export class PDFReportGenerator {
     const promCalidad = promTipo('calidad');
     const promCondicion = promTipo('condicion');
 
-    const semColor = pctObj === 0 ? '#059669' : (pctObj <= 20 ? '#D97706' : '#DC2626');
-    const semTexto = pctObj === 0 ? 'LOTE CONFORME' : (pctObj <= 20 ? 'CON OBSERVACIONES' : 'LOTE OBJETADO');
-    const semBg = pctObj === 0 ? '#ECFDF5' : (pctObj <= 20 ? '#FFFBEB' : '#FEF2F2');
+    // Bloque de madurez del lote (Brix, acidez, materia seca… según especie)
+    const madurez = process.maturity || [];
+    const madurezHTML = madurez.length > 0 ? `
+      <div style="border:1px solid #E2E8F0; border-radius:8px; padding:10px 12px; margin-bottom:16px; background:#FFFFFF;">
+        <div style="font-size:${FS.micro}; color:#64748B; font-weight:700; letter-spacing:.05em; margin-bottom:6px;">
+          PARÁMETROS DE MADUREZ DEL LOTE
+        </div>
+        <div style="display:grid; grid-template-columns:repeat(${Math.min(madurez.length, 4)},1fr); gap:10px;">
+          ${madurez.map(m => `
+            <div style="border-left:3px solid ${m.ok ? '#059669' : '#DC2626'}; padding:2px 8px;">
+              <div style="font-size:${FS.micro}; color:#64748B;">${esc(m.label)}</div>
+              <div style="font-size:${FS.subtitulo}; font-weight:800; color:${m.ok ? '#0F172A' : '#DC2626'};">
+                ${m.value}${m.unit ? ' ' + esc(m.unit) : ''}
+              </div>
+              <div style="font-size:${FS.micro}; color:${m.ok ? '#059669' : '#DC2626'}; font-weight:700;">
+                ${m.ok ? 'Cumple' : 'Fuera de norma'}
+              </div>
+            </div>`).join('')}
+        </div>
+      </div>` : '';
+
+    // Control de peso de cajas del packing
+    const wc = process.weightControl;
+    const ws = wc ? calcularEstadisticasPeso(wc) : null;
+    const pesosHTML = (wc && ws && ws.total > 0) ? `
+      <div style="border:1px solid #E2E8F0; border-radius:8px; padding:10px 12px; margin-top:14px; background:#FFFFFF;">
+        <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:8px;">
+          <span style="font-size:${FS.micro}; color:#64748B; font-weight:700; letter-spacing:.05em;">CONTROL DE PESO DE CAJAS</span>
+          <span style="font-size:${FS.micro}; color:#94A3B8;">
+            ${esc(wc.formatLabel)} · rango ${wc.minKg.toFixed(3)}–${wc.maxKg.toFixed(3)} kg
+          </span>
+        </div>
+        <div style="display:grid; grid-template-columns:repeat(5,1fr); gap:8px; text-align:center;">
+          <div><div style="font-size:${FS.micro}; color:#64748B;">Cajas pesadas</div><div style="font-size:${FS.subtitulo}; font-weight:800;">${ws.total}</div></div>
+          <div><div style="font-size:${FS.micro}; color:#64748B;">Promedio</div><div style="font-size:${FS.subtitulo}; font-weight:800;">${ws.promedio.toFixed(3)}</div></div>
+          <div><div style="font-size:${FS.micro}; color:#64748B;">Mínimo</div><div style="font-size:${FS.subtitulo}; font-weight:800;">${ws.min.toFixed(3)}</div></div>
+          <div><div style="font-size:${FS.micro}; color:#64748B;">Máximo</div><div style="font-size:${FS.subtitulo}; font-weight:800;">${ws.max.toFixed(3)}</div></div>
+          <div>
+            <div style="font-size:${FS.micro}; color:#64748B;">Conforme</div>
+            <div style="font-size:${FS.subtitulo}; font-weight:800; color:${ws.pctConforme === 100 ? '#059669' : '#DC2626'};">${ws.pctConforme.toFixed(1)}%</div>
+          </div>
+        </div>
+        ${(ws.bajoRango + ws.sobreRango) > 0 ? `
+          <div style="margin-top:8px; background:#FEF2F2; border:1px solid #FCA5A5; color:#991B1B; padding:5px 10px; border-radius:5px; font-size:${FS.meta};">
+            ${ws.bajoRango} caja(s) bajo el mínimo y ${ws.sobreRango} sobre el máximo del rango establecido.
+          </div>` : ''}
+      </div>` : '';
+
+    // Si el inspector ya resolvió el lote, esa decisión manda sobre el cálculo automático
+    const resuelto = process.verdict && process.verdict !== 'PENDIENTE';
+    const semColor = resuelto
+      ? (process.verdict === 'ACEPTADO' ? '#059669' : '#DC2626')
+      : (pctObj === 0 ? '#059669' : (pctObj <= 20 ? '#D97706' : '#DC2626'));
+    const semTexto = resuelto
+      ? `LOTE ${process.verdict}`
+      : (pctObj === 0 ? 'LOTE CONFORME' : (pctObj <= 20 ? 'CON OBSERVACIONES' : 'LOTE OBJETADO'));
+    const semBg = resuelto
+      ? (process.verdict === 'ACEPTADO' ? '#ECFDF5' : '#FEF2F2')
+      : (pctObj === 0 ? '#ECFDF5' : (pctObj <= 20 ? '#FFFBEB' : '#FEF2F2'));
 
     const filasCalibre = calibres.map(([cal, n]) => `
       <tr>
@@ -231,12 +287,20 @@ export class PDFReportGenerator {
             <div style="font-size:${FS.subtitulo}; font-weight:800;">${new Date().toLocaleDateString('es-ES')}</div>
             <div style="font-size:${FS.micro}; color:#94A3B8; font-weight:700; margin-top:6px;">PROCESO</div>
             <div style="font-size:${FS.dato}; font-weight:800;">${esc(process.processNumber)}</div>
+            ${process.folio ? `
+              <div style="font-size:${FS.micro}; color:#94A3B8; font-weight:700; margin-top:5px;">FOLIO</div>
+              <div style="font-size:${FS.dato}; font-weight:800; color:#D97706;">${esc(process.folio)}</div>` : ''}
+            ${process.inspector ? `
+              <div style="font-size:${FS.micro}; color:#94A3B8; font-weight:700; margin-top:5px;">INSPECTOR</div>
+              <div style="font-size:${FS.meta}; font-weight:700;">${esc(process.inspector)}</div>` : ''}
           </div>
         </div>
 
         <div style="background:${semBg}; border:1.5px solid ${semColor}; border-radius:10px; padding:14px 18px; margin-bottom:18px; display:flex; justify-content:space-between; align-items:center;">
           <div>
-            <div style="font-size:${FS.micro}; color:#64748B; font-weight:700; letter-spacing:.06em;">RESULTADO GLOBAL DEL PROCESO</div>
+            <div style="font-size:${FS.micro}; color:#64748B; font-weight:700; letter-spacing:.06em;">
+              ${resuelto ? 'RESOLUCIÓN DEL INSPECTOR' : 'RESULTADO GLOBAL DEL PROCESO'}
+            </div>
             <div style="font-size:22px; font-weight:800; color:${semColor}; margin-top:2px;">${semTexto}</div>
           </div>
           <div style="text-align:right;">
@@ -260,9 +324,11 @@ export class PDFReportGenerator {
           </div>
           <div style="background:#F8FAFC; border:1px solid #E2E8F0; border-radius:8px; padding:10px; text-align:center;">
             <div style="font-size:${FS.micro}; color:#64748B; font-weight:700;">CATEGORÍA</div>
-            <div style="font-size:${FS.subtitulo}; font-weight:800; color:#D97706; margin-top:4px;">${esc(process.exportCategory)}</div>
+            <div style="font-size:${FS.dato}; font-weight:800; color:#D97706; margin-top:4px;">${esc(getCategoriaLabel(process.species, process.exportCategory))}</div>
           </div>
         </div>
+
+        ${madurezHTML}
 
         <div style="display:flex; height:24px; border-radius:5px; overflow:hidden; margin-bottom:18px; border:1px solid #CBD5E1;">
           ${aprobadas > 0 ? `<div style="width:${pctAprob}%; background:#059669; color:#FFF; font-size:${FS.meta}; font-weight:800; display:flex; align-items:center; justify-content:center;">${pctAprob.toFixed(1)}% aprobadas</div>` : ''}
@@ -299,12 +365,16 @@ export class PDFReportGenerator {
           <table style="width:100%; border-collapse:collapse; font-size:${FS.tabla};">${filasDefectos}</table>
         </div>
 
+        ${pesosHTML}
+
         <div style="margin-top:auto; padding-top:20px; border-top:1px solid #E2E8F0; display:flex; justify-content:space-between; align-items:flex-end;">
-          <div style="font-size:${FS.micro}; color:#94A3B8;">
+          <div style="font-size:${FS.micro}; color:#94A3B8; max-width:340px;">
             El detalle caja por caja se presenta en las páginas siguientes (1 página por caja).
+            ${process.verdictNote ? `<br><strong style="color:#475569;">Observación:</strong> ${esc(process.verdictNote)}` : ''}
           </div>
-          <div style="text-align:center; width:190px;">
-            <div style="border-bottom:1px solid #94A3B8; height:28px; margin-bottom:3px;"></div>
+          <div style="text-align:center; width:210px;">
+            <div style="border-bottom:1px solid #94A3B8; height:26px; margin-bottom:3px;"></div>
+            <div style="font-size:${FS.dato}; font-weight:800; color:#0F172A;">${esc(process.inspector || '')}</div>
             <div style="font-size:${FS.micro}; font-weight:700; color:#334155;">Inspector de Calidad</div>
           </div>
         </div>
@@ -385,7 +455,7 @@ export class PDFReportGenerator {
             <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; font-size: 11px;">
               <div><span style="color:#64748B; font-size:9px; text-transform:uppercase;">N° Proceso</span><strong style="display:block;">${esc(process.processNumber)}</strong></div>
               <div><span style="color:#64748B; font-size:9px; text-transform:uppercase;">Variedad / Especie</span><strong style="color:#D97706; display:block;">${esc(process.variety)} (${esc(process.species)})</strong></div>
-              <div><span style="color:#64748B; font-size:9px; text-transform:uppercase;">Categoría</span><strong style="color:#059669; display:block;">${esc(process.exportCategory)}</strong></div>
+              <div><span style="color:#64748B; font-size:9px; text-transform:uppercase;">Categoría</span><strong style="color:#059669; display:block;">${esc(getCategoriaLabel(process.species, process.exportCategory))}</strong></div>
               <div><span style="color:#64748B; font-size:9px; text-transform:uppercase;">Productor</span><strong style="display:block;">${esc(process.producerName)} (${esc(process.producerCode)})</strong></div>
               <div><span style="color:#64748B; font-size:9px; text-transform:uppercase;">CSG / SDP</span><strong style="display:block;">CSG: ${esc(process.csg)} | SDP: ${esc(process.sdp)}</strong></div>
               <div><span style="color:#64748B; font-size:9px; text-transform:uppercase;">Lote / Fecha</span><strong style="display:block;">${esc(process.lot)} (${esc(process.receptionDate)})</strong></div>

@@ -1,19 +1,23 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { Camera, Plus, Trash2, CheckCircle2, AlertOctagon, FileText, Image as ImageIcon, Check, ShieldAlert } from 'lucide-react';
+import { Camera, Plus, Trash2, CheckCircle2, AlertOctagon, FileText, Image as ImageIcon, Check, ShieldAlert, Pencil } from 'lucide-react';
 import {
   ProcessData,
   BoxSampling,
   DefectItem,
-  CITRUS_COLOR_SCALE,
   BoxStatus,
   CaliberProgram,
   getCalibers,
+  getColorScale,
   getDefectsList,
+  getProgramasDisponibles,
   getTolerance,
   getMaxCalidad,
-  getMaxTotalCaja
+  getMaxTotalCaja,
+  getMaxGraves,
+  getCategoriaLabel
 } from '../types/process';
 import { ProcessStorageService, compressImage } from '../services/storage';
+import { SessionService, AuditLog } from '../services/session';
 
 interface BoxSamplingScreenProps {
   process: ProcessData;
@@ -32,14 +36,18 @@ export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
   const currentBoxNumber = (process.boxes ? process.boxes.length : 0) + 1;
   const isMandarin = process.species === 'Mandarina';
 
-  // Programa de calibres (solo mandarina ofrece Costco)
-  const [program, setProgram] = useState<CaliberProgram>('NORMAL');
+  // Programa/mercado de calibres: por defecto el primero disponible para la especie
+  const [program, setProgram] = useState<CaliberProgram>(
+    () => getProgramasDisponibles(process.species)[0]?.value ?? 'NORMAL'
+  );
 
   const calibers = useMemo(() => getCalibers(process.species, program), [process.species, program]);
   const defectsList = useMemo(() => getDefectsList(process.species), [process.species]);
+  const colorScale = useMemo(() => getColorScale(process.species), [process.species]);
+  const programas = useMemo(() => getProgramasDisponibles(process.species), [process.species]);
 
   const [selectedCaliberIndex, setSelectedCaliberIndex] = useState<number>(0);
-  const [selectedColorGrade, setSelectedColorGrade] = useState<number>(1);
+  const [selectedColorGrade, setSelectedColorGrade] = useState<number | string>(1);
   const [photos, setPhotos] = useState<string[]>([]);
   const [defects, setDefects] = useState<DefectItem[]>([]);
   const [selectedDefectIndex, setSelectedDefectIndex] = useState<number>(0);
@@ -47,6 +55,9 @@ export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
   const [notes, setNotes] = useState<string>('');
   const [isCompressing, setIsCompressing] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  // Edición de una caja ya registrada
+  const [editandoId, setEditandoId] = useState<string | null>(null);
+  const [editandoNumero, setEditandoNumero] = useState<number | null>(null);
 
   // Al cambiar de programa/especie, reajustar índices que podrían quedar fuera de rango
   useEffect(() => {
@@ -71,13 +82,22 @@ export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
 
     const maxCalidad = getMaxCalidad(process.species, process.exportCategory);
     const maxTotalCaja = getMaxTotalCaja(process.species, process.exportCategory);
+    const maxGraves = getMaxGraves(process.species);
+    const catLabel = getCategoriaLabel(process.species, process.exportCategory);
 
     let totalCalidadPct = 0;
     let totalCondicionPct = 0;
+    let totalGravesPct = 0;
+    let totalLevesPct = 0;
 
     defects.forEach(d => {
-      if (d.type === 'calidad') totalCalidadPct += d.countOrPercentage;
-      if (d.type === 'condicion') totalCondicionPct += d.countOrPercentage;
+      // Algunos defectos no suman al total de la caja (ej. Descalibre en limón)
+      if (!d.excludeFromTotal) {
+        if (d.type === 'calidad') totalCalidadPct += d.countOrPercentage;
+        if (d.type === 'condicion') totalCondicionPct += d.countOrPercentage;
+        if (d.category === 'grave') totalGravesPct += d.countOrPercentage;
+        if (d.category === 'leve') totalLevesPct += d.countOrPercentage;
+      }
 
       const tolerance = getTolerance(d, process.exportCategory);
       if (d.countOrPercentage > tolerance) {
@@ -88,17 +108,27 @@ export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
 
     const totalCajaPct = totalCalidadPct + totalCondicionPct;
 
-    if (totalCalidadPct > maxCalidad) {
+    // Palta: techo específico para defectos graves (5%) y leves (7%)
+    if (maxGraves !== null && totalGravesPct > maxGraves) {
       status = 'OBJETADA';
-      reasons.push(`Total defectos de calidad excede el límite (${totalCalidadPct}% > máx ${maxCalidad}% en ${process.exportCategory})`);
+      reasons.push(`Total defectos graves excede el límite (${totalGravesPct}% > máx ${maxGraves}%)`);
+    }
+    if (process.species === 'Palta' && totalLevesPct > maxCalidad) {
+      status = 'OBJETADA';
+      reasons.push(`Total defectos leves excede el límite (${totalLevesPct}% > máx ${maxCalidad}%)`);
+    }
+
+    if (process.species !== 'Palta' && totalCalidadPct > maxCalidad) {
+      status = 'OBJETADA';
+      reasons.push(`Total defectos de calidad excede el límite (${totalCalidadPct}% > máx ${maxCalidad}% en ${catLabel})`);
     }
     if (totalCajaPct > maxTotalCaja) {
       status = 'OBJETADA';
-      reasons.push(`Total defectos en la caja excede el límite (${totalCajaPct}% > máx ${maxTotalCaja}% en ${process.exportCategory})`);
+      reasons.push(`Total defectos en la caja excede el límite (${totalCajaPct}% > máx ${maxTotalCaja}% en ${catLabel})`);
     }
 
     // Reglas de color (tabla de colores): grado 5 = defecto; 6-8 = fruta no embalable
-    const colorObj = CITRUS_COLOR_SCALE.find(c => c.grade === selectedColorGrade);
+    const colorObj = colorScale.find(c => c.grade === selectedColorGrade);
     if (colorObj && colorObj.isDefect) {
       status = 'OBJETADA';
       if (selectedColorGrade === 5) {
@@ -110,8 +140,8 @@ export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
       reasons.push('Color grado 4: en el límite (visos verdes suaves). Termina de virar en viaje.');
     }
 
-    return { status, reasons, totalCalidadPct, totalCondicionPct, totalCajaPct };
-  }, [defects, process.species, process.exportCategory, selectedColorGrade]);
+    return { status, reasons, totalCalidadPct, totalCondicionPct, totalCajaPct, totalGravesPct, totalLevesPct };
+  }, [defects, process.species, process.exportCategory, selectedColorGrade, colorScale]);
 
   // Foto: comprimir antes de guardar (evita reventar la cuota local)
   const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -153,7 +183,7 @@ export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
     ctx.lineWidth = 4;
     ctx.strokeRect(20, 20, 360, 260);
     const currentCal = calibers[selectedCaliberIndex];
-    const colorGradeObj = CITRUS_COLOR_SCALE.find(c => c.grade === selectedColorGrade);
+    const colorGradeObj = colorScale.find(c => c.grade === selectedColorGrade);
     for (let i = 0; i < 12; i++) {
       const x = 70 + (i % 4) * 85;
       const y = 70 + Math.floor(i / 4) * 80;
@@ -189,9 +219,8 @@ export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
         type: defectDef.type,
         countOrPercentage: valor,
         unit: defectDef.unit,
-        toleranceExtraFancy: defectDef.toleranceExtraFancy,
-        toleranceFancy: defectDef.toleranceFancy,
-        toleranceFancyLatam: defectDef.toleranceFancyLatam
+        tolerance: getTolerance(defectDef, process.exportCategory),
+        excludeFromTotal: defectDef.excludeFromTotal
       };
       return [...prev, newDefect];
     });
@@ -204,7 +233,7 @@ export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
   const handleSaveAndAddNextBox = () => {
     const calObj = calibers[selectedCaliberIndex];
     if (!calObj) return;
-    const colorObj = CITRUS_COLOR_SCALE.find(c => c.grade === selectedColorGrade);
+    const colorObj = colorScale.find(c => c.grade === selectedColorGrade);
 
     const newBox: BoxSampling = {
       id: crypto.randomUUID(),
@@ -221,8 +250,33 @@ export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
       photos: [...photos],
       defects: [...defects],
       notes: notes.trim(),
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
+      inspector: SessionService.inspector()
     };
+
+    // Si estamos editando, reemplazar la caja conservando su número y fecha original
+    if (editandoId) {
+      const original = process.boxes.find(b => b.id === editandoId);
+      const editada: BoxSampling = {
+        ...newBox,
+        id: editandoId,
+        boxNumber: original?.boxNumber ?? newBox.boxNumber,
+        timestamp: original?.timestamp ?? newBox.timestamp,
+        editedAt: new Date().toISOString()
+      };
+      const actualizado: ProcessData = {
+        ...process,
+        boxes: process.boxes.map(b => b.id === editandoId ? editada : b),
+        updatedAt: new Date().toISOString()
+      };
+      const ok = ProcessStorageService.saveCurrentProcess(actualizado);
+      if (!ok) { showNotification('No se pudo guardar la edición (almacenamiento lleno).'); return; }
+      onUpdateProcess(actualizado);
+      AuditLog.registrar('Caja editada', `Caja #${editada.boxNumber} · ${editada.status}`, process.processNumber);
+      showNotification(`✓ Caja #${editada.boxNumber} actualizada.`);
+      cancelarEdicion();
+      return;
+    }
 
     const result = ProcessStorageService.addBoxToCurrentProcess(newBox);
     if (result === 'QUOTA') {
@@ -231,11 +285,36 @@ export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
     }
     if (result) {
       onUpdateProcess(result);
+      AuditLog.registrar('Caja registrada', `Caja #${currentBoxNumber} · ${newBox.caliber} · ${newBox.status}`, process.processNumber);
       showNotification(`✓ Caja #${currentBoxNumber} (${newBox.status}) guardada.`);
       setPhotos([]);
       setDefects([]);
       setNotes('');
     }
+  };
+
+  /** Carga una caja registrada en el formulario para corregirla */
+  const iniciarEdicion = (b: BoxSampling) => {
+    const idxCal = calibers.findIndex(c => `Calibre ${c.caliber}` === b.caliber);
+    if (idxCal >= 0) setSelectedCaliberIndex(idxCal);
+    if (b.program) setProgram(b.program);
+    if (b.colorGrade !== undefined) setSelectedColorGrade(b.colorGrade);
+    setPhotos([...(b.photos || [])]);
+    setDefects([...(b.defects || [])]);
+    setNotes(b.notes || '');
+    setEditandoId(b.id);
+    setEditandoNumero(b.boxNumber);
+    showNotification(`Editando caja #${b.boxNumber}. Corrige y guarda los cambios.`);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const cancelarEdicion = () => {
+    setEditandoId(null);
+    setEditandoNumero(null);
+    setPhotos([]);
+    setDefects([]);
+    setNotes('');
+    showNotification('Edición cancelada.');
   };
 
   const handleDeleteBoxFromSession = (boxId: string) => {
@@ -300,27 +379,32 @@ export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
           </div>
         )}
 
-        {/* Programa Costco (solo mandarina) */}
-        {isMandarin && (
+        {/* Programa / mercado de calibres (mandarina: Costco · palta: USA/Europa) */}
+        {programas.length > 1 && (
           <div className="form-group" style={{ marginBottom: '20px' }}>
-            <label className="form-label">Programa de Calibres</label>
+            <label className="form-label">
+              {process.species === 'Palta' ? 'Mercado de destino (tabla de calibres)' : 'Programa de Calibres'}
+            </label>
             <div style={{ display: 'flex', gap: '10px', marginTop: '6px' }}>
-              <button
-                type="button"
-                className="btn-secondary"
-                onClick={() => setProgram('NORMAL')}
-                style={{ flex: 1, justifyContent: 'center', ...(program === 'NORMAL' ? { background: '#059669', borderColor: '#059669', color: 'white' } : {}) }}
-              >
-                Normal (Tabla estándar)
-              </button>
-              <button
-                type="button"
-                className="btn-secondary"
-                onClick={() => setProgram('COSTCO')}
-                style={{ flex: 1, justifyContent: 'center', ...(program === 'COSTCO' ? { background: '#D97706', borderColor: '#D97706', color: 'white' } : {}) }}
-              >
-                Programa Costco
-              </button>
+              {programas.map((p, i) => (
+                <button
+                  key={p.value}
+                  type="button"
+                  className="btn-secondary"
+                  onClick={() => setProgram(p.value)}
+                  style={{
+                    flex: 1,
+                    justifyContent: 'center',
+                    ...(program === p.value
+                      ? (i === 0
+                          ? { background: '#059669', borderColor: '#059669', color: 'white' }
+                          : { background: '#D97706', borderColor: '#D97706', color: 'white' })
+                      : {})
+                  }}
+                >
+                  {p.label}
+                </button>
+              ))}
             </div>
           </div>
         )}
@@ -328,7 +412,7 @@ export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
         {/* Calibres */}
         <div className="form-group" style={{ marginBottom: '24px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-            <label className="form-label">Calibre {process.species} {isMandarin && program === 'COSTCO' ? '(Costco)' : ''} *</label>
+            <label className="form-label">Calibre {process.species} {programas.length > 1 && program !== 'NORMAL' ? `(${programas.find(p => p.value === program)?.label})` : ''} *</label>
             {activeCaliber && (
               <span style={{ fontSize: '0.75rem', color: '#34D399', fontWeight: 700 }}>
                 Diámetro: <strong>{activeCaliber.diameterMm} mm</strong> | Peso: <strong>{activeCaliber.weightGr} g</strong>
@@ -358,7 +442,7 @@ export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
         <div className="form-group" style={{ marginBottom: '24px' }}>
           <label className="form-label">Color de la Muestra (Tabla de Colores)</label>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: '8px', marginTop: '8px' }}>
-            {CITRUS_COLOR_SCALE.map((col) => (
+            {colorScale.map((col) => (
               <div
                 key={col.grade}
                 onClick={() => setSelectedColorGrade(col.grade)}
@@ -476,13 +560,23 @@ export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
         <div style={{ display: 'flex', gap: '12px', marginTop: '24px', paddingTop: '16px', borderTop: '1px solid #334155' }}>
           <button type="button" className="btn-primary" onClick={handleSaveAndAddNextBox} style={{ flex: 2 }}>
             <CheckCircle2 size={20} />
-            <span>Guardar Caja ({evaluationResult.status}) y Siguiente</span>
+            <span>
+              {editandoId
+                ? `Guardar cambios de la caja #${editandoNumero}`
+                : `Guardar Caja (${evaluationResult.status}) y Siguiente`}
+            </span>
           </button>
-          {process.boxes && process.boxes.length > 0 && (
-            <button type="button" className="btn-primary btn-accent" onClick={onGoToSummary} style={{ flex: 1 }}>
-              <FileText size={20} />
-              <span>Finalizar y PDF</span>
+          {editandoId ? (
+            <button type="button" className="btn-secondary" onClick={cancelarEdicion} style={{ flex: 1, justifyContent: 'center' }}>
+              <span>Cancelar edición</span>
             </button>
+          ) : (
+            process.boxes && process.boxes.length > 0 && (
+              <button type="button" className="btn-primary btn-accent" onClick={onGoToSummary} style={{ flex: 1 }}>
+                <FileText size={20} />
+                <span>Finalizar y PDF</span>
+              </button>
+            )
           )}
         </div>
       </div>
@@ -507,9 +601,14 @@ export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
                     Fotos: {b.photos.length} | Defectos: {b.defects.length} {b.colorName ? `| Color: G${b.colorGrade}` : ''}
                   </div>
                 </div>
-                <button type="button" onClick={() => handleDeleteBoxFromSession(b.id)} style={{ background: 'transparent', border: 'none', color: '#EF4444', cursor: 'pointer' }} title="Eliminar caja">
-                  <Trash2 size={18} />
-                </button>
+                <div style={{ display: 'flex', gap: '4px' }}>
+                  <button type="button" onClick={() => iniciarEdicion(b)} style={{ background: 'transparent', border: 'none', color: '#60A5FA', cursor: 'pointer' }} title="Editar caja">
+                    <Pencil size={17} />
+                  </button>
+                  <button type="button" onClick={() => handleDeleteBoxFromSession(b.id)} style={{ background: 'transparent', border: 'none', color: '#EF4444', cursor: 'pointer' }} title="Eliminar caja">
+                    <Trash2 size={18} />
+                  </button>
+                </div>
               </div>
             ))}
           </div>

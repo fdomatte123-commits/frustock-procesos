@@ -1,13 +1,16 @@
 import React from 'react';
-import { ClipboardList, Box, FileText, QrCode, FilePlus2 } from 'lucide-react';
+import { ClipboardList, Box, FileText, QrCode, FilePlus2, Scale, Settings } from 'lucide-react';
 import { ProcessData } from '../types/process';
 
+type Step = 'form' | 'sampling' | 'weights' | 'summary';
+
 interface HeaderProps {
-  currentStep: 'form' | 'sampling' | 'summary';
-  onSelectStep: (step: 'form' | 'sampling' | 'summary') => void;
+  currentStep: Step;
+  onSelectStep: (step: Step) => void;
   activeProcess: ProcessData | null;
   onSimulateQRScan: () => void;
   onNewProcess: () => void;
+  onOpenSettings: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -15,7 +18,8 @@ export const Header: React.FC<HeaderProps> = ({
   onSelectStep,
   activeProcess,
   onSimulateQRScan,
-  onNewProcess
+  onNewProcess,
+  onOpenSettings
 }) => {
   const boxCount = activeProcess?.boxes ? activeProcess.boxes.length : 0;
 
@@ -62,6 +66,14 @@ export const Header: React.FC<HeaderProps> = ({
             <QrCode size={16} />
             <span className="hide-mobile">Escáner QR</span>
           </button>
+
+          <button
+            onClick={onOpenSettings}
+            title="Ajustes"
+            style={{ background: 'rgba(148,163,184,0.12)', border: '1px solid #475569', color: '#CBD5E1', padding: '8px 10px', borderRadius: '8px', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
+          >
+            <Settings size={16} />
+          </button>
         </div>
       </div>
 
@@ -86,12 +98,24 @@ export const Header: React.FC<HeaderProps> = ({
         </button>
 
         <button
+          className={`step-tab ${currentStep === 'weights' ? 'active' : ''} ${!activeProcess ? 'disabled' : ''}`}
+          onClick={() => activeProcess && onSelectStep('weights')}
+          disabled={!activeProcess}
+        >
+          <Scale size={16} />
+          <span>3. Pesos</span>
+          {activeProcess?.weightControl?.weights?.length ? (
+            <span className="badge-counter">{activeProcess.weightControl.weights.length}</span>
+          ) : null}
+        </button>
+
+        <button
           className={`step-tab ${currentStep === 'summary' ? 'active' : ''} ${boxCount === 0 ? 'disabled' : ''}`}
           onClick={() => boxCount > 0 && onSelectStep('summary')}
           disabled={boxCount === 0}
         >
           <FileText size={16} />
-          <span>3. Reporte PDF</span>
+          <span>4. Informe</span>
         </button>
       </div>
     </header>

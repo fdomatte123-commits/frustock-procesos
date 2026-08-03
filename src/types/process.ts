@@ -1,9 +1,23 @@
 export type DefectSeverity = 'grave' | 'medio' | 'leve';
 export type DefectCategoryType = 'calidad' | 'condicion' | 'plagas';
-export type ExportCategory = 'EXTRA-FANCY' | 'FANCY' | 'FANCY-LATAM';
 export type BoxStatus = 'APROBADA' | 'OBJETADA';
-export type Species = 'Naranja' | 'Mandarina';
-export type CaliberProgram = 'NORMAL' | 'COSTCO';
+export type Species = 'Naranja' | 'Mandarina' | 'Limón' | 'Palta';
+
+/**
+ * Categorías de embalaje. Cada especie usa su propio subconjunto.
+ * - Naranja:   EXTRA-FANCY | FANCY
+ * - Mandarina: EF-SEM10 (Extra-Fancy) | F-SEM10 (Cat 1) | F-SEM20 (Fancy) | F-SEM30 (Fancy Latam)
+ * - Limón:     CHOICE-USA | FANCY-USA-J | E-FANCY-J
+ * - Palta:     PALTA-STD (tabla única)
+ */
+export type ExportCategory =
+  | 'EXTRA-FANCY' | 'FANCY'
+  | 'EF-SEM10' | 'F-SEM10' | 'F-SEM20' | 'F-SEM30'
+  | 'CHOICE-USA' | 'FANCY-USA-J' | 'E-FANCY-J'
+  | 'PALTA-STD';
+
+/** Programa/tabla de calibres. Varía por especie y mercado. */
+export type CaliberProgram = 'NORMAL' | 'COSTCO' | 'USA' | 'EUROPA';
 
 export interface DefectItem {
   id: string;
@@ -12,23 +26,113 @@ export interface DefectItem {
   type: DefectCategoryType;
   countOrPercentage: number;
   unit: '%' | 'unidades';
-  toleranceExtraFancy: number;
-  toleranceFancy: number;
-  toleranceFancyLatam: number;
+  tolerance: number;          // tolerancia aplicable en la categoría del proceso
+  excludeFromTotal?: boolean; // ej. Descalibre en limón no suma al total de la caja
+}
+
+/** Medición de madurez registrada en el proceso (Brix, acidez, materia seca…) */
+export interface MaturityReading {
+  key: string;
+  label: string;
+  value: number;
+  unit: string;
+  ok: boolean;
+}
+
+/** Veredicto del lote completo, definido por el inspector */
+export type ProcessVerdict = 'PENDIENTE' | 'ACEPTADO' | 'OBJETADO';
+
+/** Control de peso de cajas (registro independiente del muestreo) */
+export interface WeightControl {
+  formatLabel: string;   // ej. "Caja 10 kg palta"
+  minKg: number;
+  maxKg: number;
+  weights: number[];     // pesos ingresados
+  updatedAt: string;
+}
+
+/** Formato de caja con su rango de peso aceptable */
+export interface BoxFormat {
+  id: string;
+  label: string;
+  minKg: number;
+  maxKg: number;
+  species?: Species;
+}
+
+/** Formatos precargados desde las normas (editables por el usuario) */
+export const BOX_FORMATS: BoxFormat[] = [
+  { id: 'palta-4', label: 'Palta · caja 4 kg', minKg: 4.150, maxKg: 4.300, species: 'Palta' },
+  { id: 'palta-10', label: 'Palta · caja 10 kg', minKg: 10.150, maxKg: 10.300, species: 'Palta' },
+  { id: 'citrus-15', label: 'Cítricos · caja 15 kg', minKg: 15.000, maxKg: 15.500 },
+  { id: 'citrus-17', label: 'Cítricos · caja 17 kg', minKg: 17.000, maxKg: 17.500 },
+  { id: 'custom', label: 'Otro formato (definir rango)', minKg: 0, maxKg: 0 }
+];
+
+/** Estadísticas calculadas del control de pesos */
+export interface WeightStats {
+  total: number;
+  promedio: number;
+  min: number;
+  max: number;
+  bajoRango: number;
+  sobreRango: number;
+  enRango: number;
+  pctConforme: number;
+}
+
+export function calcularEstadisticasPeso(w: WeightControl): WeightStats {
+  const pesos = w.weights.filter(p => Number.isFinite(p) && p > 0);
+  const total = pesos.length;
+  if (total === 0) {
+    return { total: 0, promedio: 0, min: 0, max: 0, bajoRango: 0, sobreRango: 0, enRango: 0, pctConforme: 0 };
+  }
+  const suma = pesos.reduce((a, b) => a + b, 0);
+  const bajoRango = pesos.filter(p => p < w.minKg).length;
+  const sobreRango = pesos.filter(p => p > w.maxKg).length;
+  const enRango = total - bajoRango - sobreRango;
+  return {
+    total,
+    promedio: suma / total,
+    min: Math.min(...pesos),
+    max: Math.max(...pesos),
+    bajoRango,
+    sobreRango,
+    enRango,
+    pctConforme: (enRango / total) * 100
+  };
+}
+
+/**
+ * Interpreta un bloque de texto con pesos (pegado desde una transcripción de IA).
+ * Acepta separación por comas, espacios, saltos de línea, punto y coma o tabulaciones,
+ * y tanto punto como coma decimal. Ignora texto que no sea numérico.
+ */
+export function parsearPesos(texto: string): number[] {
+  if (!texto) return [];
+  return texto
+    .replace(/,(\d{1,3})(?!\d)/g, '.$1')      // coma decimal → punto (17,2 → 17.2)
+    .split(/[\s,;|]+/)
+    .map(t => t.replace(/[^0-9.]/g, ''))       // limpiar unidades ("17.2kg" → "17.2")
+    .filter(t => t !== '' && t !== '.')
+    .map(t => parseFloat(t))
+    .filter(n => Number.isFinite(n) && n > 0);
 }
 
 export interface BoxSampling {
   id: string;
-  boxNumber: number; // Correlativo (1, 2, 3...)
-  program?: CaliberProgram; // NORMAL o COSTCO (aplica a mandarina)
-  caliber: string; // Ej. "Calibre 88", "Calibre 2A"
-  caliberLabel?: string; // Rótulo mostrado (ej. Costco "24")
-  diameterMm?: string; // Ej. "69 - 72 mm"
-  weightGr?: string; // Ej. "156 - 188 gr"
-  colorGrade?: number; // Escala 1 al 8
+  boxNumber: number;
+  inspector?: string;   // quién registró la caja
+  editedAt?: string;    // marca de última edición
+  program?: CaliberProgram;
+  caliber: string;
+  caliberLabel?: string;
+  diameterMm?: string;
+  weightGr?: string;
+  colorGrade?: number | string;
   colorName?: string;
-  status: BoxStatus; // APROBADA | OBJETADA
-  statusReasons?: string[]; // Razones si queda objetada
+  status: BoxStatus;
+  statusReasons?: string[];
   photos: string[];
   defects: DefectItem[];
   notes: string;
@@ -38,10 +142,11 @@ export interface BoxSampling {
 
 export interface ProcessData {
   id: string;
+  folio?: string;               // folio correlativo del informe
   processNumber: string;
-  species: Species; // "Naranja" | "Mandarina"
-  variety: string; // Ej. "Fukumoto", "W. Murcott", "Clemenules"
-  exportCategory: ExportCategory; // "EXTRA-FANCY" | "FANCY" | "FANCY-LATAM"
+  species: Species;
+  variety: string;
+  exportCategory: ExportCategory;
   producerCode: string;
   producerName: string;
   csg: string;
@@ -49,26 +154,68 @@ export interface ProcessData {
   receptionDate: string;
   lot: string;
   totalKg: number;
+  maturity?: MaturityReading[]; // parámetros de madurez del lote
+  weightControl?: WeightControl; // control de peso de cajas del packing
+  verdict?: ProcessVerdict;      // decisión del lote (la define el inspector)
+  verdictNote?: string;          // justificación de la decisión
+  inspector?: string;            // quién realizó la inspección
   createdAt: string;
   updatedAt: string;
   boxes: BoxSampling[];
 }
 
 // =============================================================
-// ESPECIFICACIONES TÉCNICAS — común a cítricos
+// CATEGORÍAS DISPONIBLES POR ESPECIE
 // =============================================================
+export interface CategoryOption {
+  value: ExportCategory;
+  label: string;
+  hint?: string;
+}
 
+export const CATEGORIES_BY_SPECIES: Record<Species, CategoryOption[]> = {
+  Naranja: [
+    { value: 'EXTRA-FANCY', label: 'EXTRA-FANCY', hint: 'Total caja 10%' },
+    { value: 'FANCY', label: 'FANCY', hint: 'Total caja 12%' }
+  ],
+  Mandarina: [
+    { value: 'EF-SEM10', label: 'EXTRA-FANCY', hint: '0–10% semillas · total defectos 10%' },
+    { value: 'F-SEM10', label: 'CAT 1', hint: '0–10% semillas · total defectos 11%' },
+    { value: 'F-SEM20', label: 'FANCY', hint: '11–20% semillas · Canadá/Europa/UK/USA · total 12%' },
+    { value: 'F-SEM30', label: 'FANCY LATAM', hint: '21–30% semillas · Latinoamérica · total 14%' }
+  ],
+  'Limón': [
+    { value: 'CHOICE-USA', label: 'CHOICE USA Class N°1', hint: 'Condición total 8%' },
+    { value: 'FANCY-USA-J', label: 'FANCY USA (J)', hint: 'Condición total 3%' },
+    { value: 'E-FANCY-J', label: 'E-FANCY (J)', hint: 'Condición total 2%' }
+  ],
+  Palta: [
+    { value: 'PALTA-STD', label: 'Estándar Hass', hint: 'Graves 5% · Leves 7% · Total 12%' }
+  ]
+};
+
+export function getCategoriasDisponibles(species: Species): CategoryOption[] {
+  return CATEGORIES_BY_SPECIES[species] || CATEGORIES_BY_SPECIES.Naranja;
+}
+
+/** Etiqueta legible de una categoría */
+export function getCategoriaLabel(species: Species, cat: ExportCategory): string {
+  const found = getCategoriasDisponibles(species).find(c => c.value === cat);
+  return found ? found.label : String(cat);
+}
+
+// =============================================================
+// CALIBRES
+// =============================================================
 export interface CaliberSpec {
-  caliber: string;       // Calibre USA-LAT (ej. "88", "2A", "1XX")
-  diameterMm: string;    // "69 - 72"
-  weightGr: string;      // "156 - 188"
-  costcoLabel?: string;  // Rótulo Costco (ej. "24", "36")
+  caliber: string;
+  diameterMm: string;
+  weightGr: string;
+  costcoLabel?: string;
   isSpecialOrder?: boolean;
 }
 
-// -------------------------------------------------------------
-// NARANJA — Tabla de calibres (4.2.1)
-// -------------------------------------------------------------
+/** NARANJA — tabla 4.2.1 */
 export const ORANGE_CALIBERS: CaliberSpec[] = [
   { caliber: '36', diameterMm: '95 - 98', weightGr: '418 - 445' },
   { caliber: '40', diameterMm: '88 - 95', weightGr: '356 - 418' },
@@ -82,9 +229,7 @@ export const ORANGE_CALIBERS: CaliberSpec[] = [
   { caliber: '138', diameterMm: '52 - 58', weightGr: '78 - 107', isSpecialOrder: true }
 ];
 
-// -------------------------------------------------------------
-// MANDARINA — Tabla de calibres NORMAL (foto 2)
-// -------------------------------------------------------------
+/** MANDARINA — tabla estándar */
 export const MANDARIN_CALIBERS: CaliberSpec[] = [
   { caliber: '1XX', diameterMm: '74 - 79', weightGr: '147 - 184' },
   { caliber: '1X', diameterMm: '68 - 74', weightGr: '130 - 147' },
@@ -96,16 +241,13 @@ export const MANDARIN_CALIBERS: CaliberSpec[] = [
   { caliber: '5B', diameterMm: '45 - 46.9', weightGr: '37 - 48', isSpecialOrder: true }
 ];
 
-// -------------------------------------------------------------
-// MANDARINA — Tabla de calibres PROGRAMA COSTCO (foto 3)
-// El rótulo Costco puede mapear a subcalibres (2A/2B, 4A/4B).
-// -------------------------------------------------------------
+/** MANDARINA — programa COSTCO */
 export const MANDARIN_COSTCO_CALIBERS: CaliberSpec[] = [
   { costcoLabel: '16', caliber: '1XX', diameterMm: '74 - 79', weightGr: '147 - 184' },
   { costcoLabel: '18', caliber: '1X', diameterMm: '68 - 74', weightGr: '130 - 147' },
   { costcoLabel: '20', caliber: '1', diameterMm: '64 - 68', weightGr: '116 - 130' },
   { costcoLabel: '24', caliber: '2A', diameterMm: '61 - 64', weightGr: '100 - 116' },
-  { costcoLabel: '24', caliber: '2B', diameterMm: '58 - 61', weightGr: '92 - 100' },
+  { costcoLabel: '24', caliber: '2B', diameterMm: '59 - 61', weightGr: '92 - 100' },
   { costcoLabel: '32', caliber: '3', diameterMm: '55 - 58', weightGr: '74 - 92' },
   { costcoLabel: '36', caliber: '4A', diameterMm: '51 - 55', weightGr: '65 - 74' },
   { costcoLabel: '36', caliber: '4B', diameterMm: '49 - 51', weightGr: '59 - 65' },
@@ -113,143 +255,357 @@ export const MANDARIN_COSTCO_CALIBERS: CaliberSpec[] = [
   { costcoLabel: '6', caliber: '5B', diameterMm: '44 - 46.9', weightGr: '37 - 48', isSpecialOrder: true }
 ];
 
-// Selector de tabla de calibres según especie y programa
-export function getCalibers(species: Species, program: CaliberProgram = 'NORMAL'): CaliberSpec[] {
+/**
+ * LIMÓN — tabla de calibres y diámetro para exportación.
+ * El peso es referencial: puede variar según el lote.
+ * Los calibres 75 y 235 se embalan solo por indicación comercial.
+ */
+export const LEMON_CALIBERS: CaliberSpec[] = [
+  { caliber: '75', diameterMm: '70 - 76', weightGr: '209 - 276', isSpecialOrder: true },
+  { caliber: '95', diameterMm: '65 - 69', weightGr: '168 - 208' },
+  { caliber: '115', diameterMm: '60 - 64', weightGr: '138 - 167' },
+  { caliber: '140', diameterMm: '57 - 59', weightGr: '115 - 137' },
+  { caliber: '165', diameterMm: '54 - 56', weightGr: '96 - 114' },
+  { caliber: '200', diameterMm: '50 - 53', weightGr: '80 - 95' },
+  { caliber: '235', diameterMm: '48 - 49', weightGr: '69 - 79', isSpecialOrder: true }
+];
+
+/** PALTA — calibres mercado USA (tabla A) */
+export const AVOCADO_USA_CALIBERS: CaliberSpec[] = [
+  { caliber: '32', diameterMm: '—', weightGr: '333 - 500' },
+  { caliber: '36', diameterMm: '—', weightGr: '303 - 333' },
+  { caliber: '40', diameterMm: '—', weightGr: '255 - 303' },
+  { caliber: '50', diameterMm: '—', weightGr: '203 - 255' },
+  { caliber: '60', diameterMm: '—', weightGr: '171 - 202' },
+  { caliber: '70', diameterMm: '—', weightGr: '149 - 170' },
+  { caliber: '84', diameterMm: '—', weightGr: '112 - 148' },
+  { caliber: '111', diameterMm: '—', weightGr: '80 - 112' }
+];
+
+/** PALTA — calibres mercado EUROPA (tabla B) */
+export const AVOCADO_EU_CALIBERS: CaliberSpec[] = [
+  { caliber: '10', diameterMm: '—', weightGr: '364 - 500' },
+  { caliber: '12', diameterMm: '—', weightGr: '309 - 363' },
+  { caliber: '14', diameterMm: '—', weightGr: '266 - 308' },
+  { caliber: '16', diameterMm: '—', weightGr: '236 - 265' },
+  { caliber: '18', diameterMm: '—', weightGr: '211 - 235' },
+  { caliber: '20', diameterMm: '—', weightGr: '191 - 210' },
+  { caliber: '22', diameterMm: '—', weightGr: '171 - 190' },
+  { caliber: '24', diameterMm: '—', weightGr: '156 - 170' },
+  { caliber: '26', diameterMm: '—', weightGr: '148 - 155' },
+  { caliber: '28', diameterMm: '—', weightGr: '138 - 147' },
+  { caliber: '30', diameterMm: '—', weightGr: '128 - 137' },
+  { caliber: '32', diameterMm: '—', weightGr: '84 - 127' }
+];
+
+/** Programas de calibre disponibles por especie */
+export function getProgramasDisponibles(species: Species): { value: CaliberProgram; label: string }[] {
   if (species === 'Mandarina') {
-    return program === 'COSTCO' ? MANDARIN_COSTCO_CALIBERS : MANDARIN_CALIBERS;
+    return [
+      { value: 'NORMAL', label: 'Normal' },
+      { value: 'COSTCO', label: 'Programa Costco' }
+    ];
   }
+  if (species === 'Palta') {
+    return [
+      { value: 'USA', label: 'Mercado USA' },
+      { value: 'EUROPA', label: 'Mercado Europa' }
+    ];
+  }
+  return [{ value: 'NORMAL', label: 'Normal' }];
+}
+
+export function getCalibers(species: Species, program: CaliberProgram = 'NORMAL'): CaliberSpec[] {
+  if (species === 'Mandarina') return program === 'COSTCO' ? MANDARIN_COSTCO_CALIBERS : MANDARIN_CALIBERS;
+  if (species === 'Limón') return LEMON_CALIBERS;
+  if (species === 'Palta') return program === 'EUROPA' ? AVOCADO_EU_CALIBERS : AVOCADO_USA_CALIBERS;
   return ORANGE_CALIBERS;
 }
 
-// -------------------------------------------------------------
-// ESCALA DE COLOR CÍTRICOS (foto 1) — con reglas de embalaje
-// grados 1-4 embalables; grado 5 = defecto (>21% visos verdes);
-// grados 6-8 = FRUTA NO EMBALABLE
-// -------------------------------------------------------------
-export interface CitrusColorGrade {
-  grade: number;
+// =============================================================
+// ESCALAS DE COLOR
+// =============================================================
+export interface ColorGrade {
+  grade: number | string;
   name: string;
   hex: string;
   rule: string;
-  embalable: boolean;   // false => no debe embalarse
-  isDefect: boolean;    // true => cuenta como defecto de condición
+  embalable: boolean;
+  isDefect: boolean;
 }
 
-export const CITRUS_COLOR_SCALE: CitrusColorGrade[] = [
+/** CÍTRICOS DULCES (naranja y mandarina) — escala 1 a 8 */
+export const CITRUS_COLOR_SCALE: ColorGrade[] = [
   { grade: 1, name: 'Naranjo Intenso', hex: '#FF5722', rule: 'Full color', embalable: true, isDefect: false },
   { grade: 2, name: 'Naranjo sin intensidad', hex: '#FF9800', rule: 'Full color', embalable: true, isDefect: false },
   { grade: 3, name: 'Naranjo con visos verdes suaves', hex: '#FFC107', rule: 'Full color', embalable: true, isDefect: false },
-  { grade: 4, name: 'Naranjo con visos verdes intensos', hex: '#CDDC39', rule: 'Fruta con 20% visos verdes suaves; termina de virar en viaje', embalable: true, isDefect: false },
-  { grade: 5, name: 'Verde sin intensidad', hex: '#8BC34A', rule: 'Sobre 21% visos verdes intensos: calificada como DEFECTO', embalable: false, isDefect: true },
+  { grade: 4, name: 'Naranjo con visos verdes intensos', hex: '#CDDC39', rule: '20% visos verdes suaves; vira en viaje', embalable: true, isDefect: false },
+  { grade: 5, name: 'Verde sin intensidad', hex: '#8BC34A', rule: 'Sobre 21% visos verdes: DEFECTO', embalable: false, isDefect: true },
   { grade: 6, name: 'Verde medianamente intenso', hex: '#4CAF50', rule: 'FRUTA NO EMBALABLE', embalable: false, isDefect: true },
   { grade: 7, name: 'Verde Intenso', hex: '#2E7D32', rule: 'FRUTA NO EMBALABLE', embalable: false, isDefect: true },
   { grade: 8, name: 'Verde Oscuro', hex: '#1B5E20', rule: 'FRUTA NO EMBALABLE', embalable: false, isDefect: true }
 ];
 
-// Compatibilidad: alias usado por código previo
-export const ORANGE_COLOR_SCALE = CITRUS_COLOR_SCALE;
+/** LIMÓN — escala 1 a 7 con subdivisiones; el 1 y el 7 son defecto */
+export const LEMON_COLOR_SCALE: ColorGrade[] = [
+  { grade: 1, name: 'Naranjo / amarillo anaranjado', hex: '#F5B041', rule: 'DEFECTO (sobremaduro)', embalable: false, isDefect: true },
+  { grade: 2, name: 'Amarillo puro', hex: '#F1C40F', rule: 'Embalable', embalable: true, isDefect: false },
+  { grade: 3, name: 'Amarillo', hex: '#F4D03F', rule: 'Embalable', embalable: true, isDefect: false },
+  { grade: 4, name: 'Amarillo con puntas verdes', hex: '#D4AC0D', rule: 'Embalable', embalable: true, isDefect: false },
+  { grade: '5A', name: 'Verde amarillento', hex: '#A2D149', rule: 'Embalable', embalable: true, isDefect: false },
+  { grade: '5B', name: 'Verde claro con manchas', hex: '#7CB342', rule: 'Embalable', embalable: true, isDefect: false },
+  { grade: '6A', name: 'Verde claro', hex: '#81C784', rule: 'Embalable', embalable: true, isDefect: false },
+  { grade: '6B', name: 'Verde medio', hex: '#4CAF50', rule: 'Embalable', embalable: true, isDefect: false },
+  { grade: '6C', name: 'Verde oscuro', hex: '#2E7D32', rule: 'Embalable', embalable: true, isDefect: false },
+  { grade: 7, name: 'Verde muy oscuro', hex: '#1B5E20', rule: 'DEFECTO / descarte según tonalidad', embalable: false, isDefect: true }
+];
 
-// -------------------------------------------------------------
-// DEFECTOS
-// -------------------------------------------------------------
+/** PALTA — color de cubrimiento (Hass) */
+export const AVOCADO_COLOR_SCALE: ColorGrade[] = [
+  { grade: 1, name: 'Verde', hex: '#2ECC71', rule: 'Japón/China: 100% verde', embalable: true, isDefect: false },
+  { grade: 2, name: 'Pintón', hex: '#27AE60', rule: 'Según indicación comercial', embalable: true, isDefect: false },
+  { grade: 3, name: 'Bronceado', hex: '#1E8449', rule: 'Según indicación comercial', embalable: true, isDefect: false },
+  { grade: 4, name: 'Negro morado', hex: '#2C3E50', rule: 'Máximo 90% color negro', embalable: true, isDefect: false },
+  { grade: 5, name: 'Negro', hex: '#111111', rule: 'Sobre 90% negro: no embalable', embalable: false, isDefect: true }
+];
+
+export const ORANGE_COLOR_SCALE = CITRUS_COLOR_SCALE; // compatibilidad
+
+export function getColorScale(species: Species): ColorGrade[] {
+  if (species === 'Limón') return LEMON_COLOR_SCALE;
+  if (species === 'Palta') return AVOCADO_COLOR_SCALE;
+  return CITRUS_COLOR_SCALE;
+}
+
+// =============================================================
+// DEFECTOS Y TOLERANCIAS
+// =============================================================
 export interface DefectDef {
   name: string;
   type: DefectCategoryType;
   category: DefectSeverity;
-  toleranceExtraFancy: number;
-  toleranceFancy: number;
-  toleranceFancyLatam: number;
   unit: '%' | 'unidades';
+  tolerances: Partial<Record<ExportCategory, number>>;
+  /** Si es true, no se suma al total de la caja (ej. Descalibre en limón) */
+  excludeFromTotal?: boolean;
 }
 
-// NARANJA (tabla 4.3) — mantiene su lista; se añade la 3ª columna igual a Fancy
+/** NARANJA — tabla 4.3 */
 export const ORANGE_DEFECTS_LIST: DefectDef[] = [
-  { name: 'Desuniformidad De Color', type: 'calidad', category: 'medio', toleranceExtraFancy: 6, toleranceFancy: 10, toleranceFancyLatam: 10, unit: '%' },
-  { name: 'Fruta Verde', type: 'calidad', category: 'grave', toleranceExtraFancy: 5, toleranceFancy: 6, toleranceFancyLatam: 6, unit: '%' },
-  { name: 'Descalibre', type: 'calidad', category: 'medio', toleranceExtraFancy: 6, toleranceFancy: 10, toleranceFancyLatam: 10, unit: '%' },
-  { name: 'Fumagina', type: 'calidad', category: 'grave', toleranceExtraFancy: 0, toleranceFancy: 0, toleranceFancyLatam: 0, unit: '%' },
-  { name: 'Rugosidad', type: 'calidad', category: 'medio', toleranceExtraFancy: 6, toleranceFancy: 10, toleranceFancyLatam: 10, unit: '%' },
-  { name: 'Deforme', type: 'calidad', category: 'medio', toleranceExtraFancy: 6, toleranceFancy: 10, toleranceFancyLatam: 10, unit: '%' },
-  { name: 'Russet Áspero', type: 'calidad', category: 'medio', toleranceExtraFancy: 6, toleranceFancy: 10, toleranceFancyLatam: 10, unit: '%' },
-  { name: 'Ribbing', type: 'calidad', category: 'medio', toleranceExtraFancy: 6, toleranceFancy: 10, toleranceFancyLatam: 10, unit: '%' },
-  { name: 'Manchas', type: 'calidad', category: 'medio', toleranceExtraFancy: 5, toleranceFancy: 10, toleranceFancyLatam: 10, unit: '%' },
-  { name: 'Ombligo Abierto (> 1 Cm²)', type: 'calidad', category: 'medio', toleranceExtraFancy: 6, toleranceFancy: 10, toleranceFancyLatam: 10, unit: '%' },
-  { name: 'Herida Cicatrizada', type: 'calidad', category: 'leve', toleranceExtraFancy: 2, toleranceFancy: 2, toleranceFancyLatam: 2, unit: '%' },
-  { name: 'Sin Pedúnculo', type: 'calidad', category: 'leve', toleranceExtraFancy: 6, toleranceFancy: 10, toleranceFancyLatam: 10, unit: '%' },
-  { name: 'Daño Caracol', type: 'calidad', category: 'leve', toleranceExtraFancy: 2, toleranceFancy: 2, toleranceFancyLatam: 2, unit: '%' },
-  { name: 'Golpe De Sol (20% Fruto Afectado)', type: 'calidad', category: 'medio', toleranceExtraFancy: 6, toleranceFancy: 10, toleranceFancyLatam: 10, unit: '%' },
-  { name: 'Insectos (Escamas)', type: 'plagas', category: 'grave', toleranceExtraFancy: 0, toleranceFancy: 0, toleranceFancyLatam: 0, unit: '%' },
-  { name: 'Pudrición', type: 'condicion', category: 'grave', toleranceExtraFancy: 0, toleranceFancy: 0, toleranceFancyLatam: 0, unit: '%' },
-  { name: 'Ombligo Rasgado', type: 'condicion', category: 'grave', toleranceExtraFancy: 2, toleranceFancy: 4, toleranceFancyLatam: 4, unit: '%' },
-  { name: 'Ombligo Expuesto', type: 'condicion', category: 'grave', toleranceExtraFancy: 0, toleranceFancy: 0, toleranceFancyLatam: 0, unit: '%' },
-  { name: 'Creasing', type: 'condicion', category: 'medio', toleranceExtraFancy: 2, toleranceFancy: 4, toleranceFancyLatam: 4, unit: '%' },
-  { name: 'Partidura / Grietas', type: 'condicion', category: 'grave', toleranceExtraFancy: 2, toleranceFancy: 2, toleranceFancyLatam: 2, unit: '%' },
-  { name: 'Pitting', type: 'condicion', category: 'medio', toleranceExtraFancy: 2, toleranceFancy: 2, toleranceFancyLatam: 2, unit: '%' },
-  { name: 'Fruto Blando', type: 'condicion', category: 'medio', toleranceExtraFancy: 2, toleranceFancy: 2, toleranceFancyLatam: 2, unit: '%' },
-  { name: 'Oleocelosis (1 Cm²)', type: 'condicion', category: 'medio', toleranceExtraFancy: 2, toleranceFancy: 2, toleranceFancyLatam: 2, unit: '%' },
-  { name: 'Piquetes', type: 'condicion', category: 'medio', toleranceExtraFancy: 2, toleranceFancy: 2, toleranceFancyLatam: 2, unit: '%' },
-  { name: 'Daño Tijeras / Herida Abierta', type: 'condicion', category: 'grave', toleranceExtraFancy: 2, toleranceFancy: 2, toleranceFancyLatam: 2, unit: '%' }
+  { name: 'Categoría Superior', type: 'calidad', category: 'leve', unit: '%', tolerances: { 'EXTRA-FANCY': 5, FANCY: 5 } },
+  { name: 'Insectos (Escamas)', type: 'plagas', category: 'grave', unit: '%', tolerances: { 'EXTRA-FANCY': 0, FANCY: 0 } },
+  { name: 'Desuniformidad de Color', type: 'calidad', category: 'medio', unit: '%', tolerances: { 'EXTRA-FANCY': 6, FANCY: 10 } },
+  { name: 'Fruta Verde', type: 'calidad', category: 'grave', unit: '%', tolerances: { 'EXTRA-FANCY': 5, FANCY: 6 } },
+  { name: 'Descalibre', type: 'calidad', category: 'medio', unit: '%', tolerances: { 'EXTRA-FANCY': 6, FANCY: 10 } },
+  { name: 'Fumagina', type: 'calidad', category: 'grave', unit: '%', tolerances: { 'EXTRA-FANCY': 0, FANCY: 0 } },
+  { name: 'Rugosidad', type: 'calidad', category: 'medio', unit: '%', tolerances: { 'EXTRA-FANCY': 6, FANCY: 10 } },
+  { name: 'Deforme', type: 'calidad', category: 'medio', unit: '%', tolerances: { 'EXTRA-FANCY': 6, FANCY: 10 } },
+  { name: 'Russet Áspero', type: 'calidad', category: 'medio', unit: '%', tolerances: { 'EXTRA-FANCY': 6, FANCY: 10 } },
+  { name: 'Ribbing', type: 'calidad', category: 'medio', unit: '%', tolerances: { 'EXTRA-FANCY': 6, FANCY: 10 } },
+  { name: 'Manchas', type: 'calidad', category: 'medio', unit: '%', tolerances: { 'EXTRA-FANCY': 5, FANCY: 10 } },
+  { name: 'Ombligo Abierto (> 1 cm²)', type: 'calidad', category: 'medio', unit: '%', tolerances: { 'EXTRA-FANCY': 6, FANCY: 10 } },
+  { name: 'Herida Cicatrizada', type: 'calidad', category: 'leve', unit: '%', tolerances: { 'EXTRA-FANCY': 2, FANCY: 2 } },
+  { name: 'Sin Pedúnculo', type: 'calidad', category: 'leve', unit: '%', tolerances: { 'EXTRA-FANCY': 6, FANCY: 10 } },
+  { name: 'Daño Caracol', type: 'calidad', category: 'leve', unit: '%', tolerances: { 'EXTRA-FANCY': 2, FANCY: 2 } },
+  { name: 'Golpe de Sol (20% del fruto)', type: 'calidad', category: 'medio', unit: '%', tolerances: { 'EXTRA-FANCY': 6, FANCY: 10 } },
+  { name: 'Pudrición', type: 'condicion', category: 'grave', unit: '%', tolerances: { 'EXTRA-FANCY': 0, FANCY: 0 } },
+  { name: 'Ombligo Rasgado', type: 'condicion', category: 'grave', unit: '%', tolerances: { 'EXTRA-FANCY': 2, FANCY: 4 } },
+  { name: 'Ombligo Expuesto', type: 'condicion', category: 'grave', unit: '%', tolerances: { 'EXTRA-FANCY': 0, FANCY: 0 } },
+  { name: 'Creasing', type: 'condicion', category: 'medio', unit: '%', tolerances: { 'EXTRA-FANCY': 2, FANCY: 4 } },
+  { name: 'Partidura / Grietas', type: 'condicion', category: 'grave', unit: '%', tolerances: { 'EXTRA-FANCY': 2, FANCY: 2 } },
+  { name: 'Pitting', type: 'condicion', category: 'medio', unit: '%', tolerances: { 'EXTRA-FANCY': 2, FANCY: 2 } },
+  { name: 'Fruto Blando', type: 'condicion', category: 'medio', unit: '%', tolerances: { 'EXTRA-FANCY': 2, FANCY: 2 } },
+  { name: 'Oleocelosis (1 cm²)', type: 'condicion', category: 'medio', unit: '%', tolerances: { 'EXTRA-FANCY': 2, FANCY: 2 } },
+  { name: 'Piquetes', type: 'condicion', category: 'medio', unit: '%', tolerances: { 'EXTRA-FANCY': 2, FANCY: 2 } },
+  { name: 'Daño Tijeras / Herida Abierta', type: 'condicion', category: 'grave', unit: '%', tolerances: { 'EXTRA-FANCY': 2, FANCY: 2 } }
 ];
 
-// MANDARINA (foto 4) — 3 columnas: Extra-Fancy / Fancy / Fancy-Latam
+/** MANDARINA — 4 categorías según % de semillas */
 export const MANDARIN_DEFECTS_LIST: DefectDef[] = [
-  { name: 'Residuos Químicos', type: 'condicion', category: 'grave', toleranceExtraFancy: 0, toleranceFancy: 0, toleranceFancyLatam: 0, unit: '%' },
-  { name: 'Polvo / Tierra', type: 'condicion', category: 'grave', toleranceExtraFancy: 0, toleranceFancy: 0, toleranceFancyLatam: 0, unit: '%' },
-  { name: 'Insectos Cuarentenarios', type: 'plagas', category: 'grave', toleranceExtraFancy: 0, toleranceFancy: 0, toleranceFancyLatam: 0, unit: '%' },
-  { name: 'Ácaros / Insectos Acompañantes', type: 'plagas', category: 'grave', toleranceExtraFancy: 0, toleranceFancy: 0, toleranceFancyLatam: 0, unit: '%' },
-  { name: 'Pudrición', type: 'condicion', category: 'grave', toleranceExtraFancy: 0, toleranceFancy: 0, toleranceFancyLatam: 0, unit: '%' },
-  { name: 'Herida Abierta', type: 'condicion', category: 'grave', toleranceExtraFancy: 0, toleranceFancy: 0, toleranceFancyLatam: 0, unit: '%' },
-  { name: 'Deshidratación Severa', type: 'condicion', category: 'grave', toleranceExtraFancy: 0, toleranceFancy: 0, toleranceFancyLatam: 0, unit: '%' },
-  { name: 'Fruta Blanda', type: 'condicion', category: 'grave', toleranceExtraFancy: 0, toleranceFancy: 0, toleranceFancyLatam: 0, unit: '%' },
-  { name: 'Creasing Severo', type: 'condicion', category: 'grave', toleranceExtraFancy: 0, toleranceFancy: 0, toleranceFancyLatam: 0, unit: '%' },
-  { name: 'Bufado Severo', type: 'condicion', category: 'grave', toleranceExtraFancy: 0, toleranceFancy: 0, toleranceFancyLatam: 0, unit: '%' },
-  { name: 'Pedúnculo Largo', type: 'calidad', category: 'leve', toleranceExtraFancy: 5, toleranceFancy: 5, toleranceFancyLatam: 5, unit: '%' },
-  { name: 'Cuello de Botella', type: 'calidad', category: 'medio', toleranceExtraFancy: 5, toleranceFancy: 8, toleranceFancyLatam: 10, unit: '%' },
-  { name: 'Golpe de Sol', type: 'calidad', category: 'medio', toleranceExtraFancy: 5, toleranceFancy: 8, toleranceFancyLatam: 10, unit: '%' },
-  { name: 'Herida Cicatrizada Leve', type: 'calidad', category: 'leve', toleranceExtraFancy: 5, toleranceFancy: 8, toleranceFancyLatam: 10, unit: '%' },
-  { name: 'Rugosidad', type: 'calidad', category: 'medio', toleranceExtraFancy: 5, toleranceFancy: 8, toleranceFancyLatam: 10, unit: '%' },
-  { name: 'Fumagina', type: 'calidad', category: 'medio', toleranceExtraFancy: 5, toleranceFancy: 8, toleranceFancyLatam: 10, unit: '%' },
-  { name: 'Descalibre', type: 'calidad', category: 'medio', toleranceExtraFancy: 4, toleranceFancy: 6, toleranceFancyLatam: 10, unit: '%' },
-  { name: 'Russet / Manchas (0,5 Cm²)', type: 'calidad', category: 'medio', toleranceExtraFancy: 5, toleranceFancy: 10, toleranceFancyLatam: 10, unit: '%' },
-  { name: 'Ausencia de Roseta', type: 'calidad', category: 'leve', toleranceExtraFancy: 5, toleranceFancy: 5, toleranceFancyLatam: 5, unit: '%' },
-  { name: 'Oleocelosis Leve (0,5 Cm²)', type: 'condicion', category: 'medio', toleranceExtraFancy: 3, toleranceFancy: 8, toleranceFancyLatam: 8, unit: '%' },
-  { name: 'Bufado Leve', type: 'condicion', category: 'leve', toleranceExtraFancy: 3, toleranceFancy: 5, toleranceFancyLatam: 5, unit: '%' },
-  { name: 'Piquetes', type: 'condicion', category: 'medio', toleranceExtraFancy: 3, toleranceFancy: 3, toleranceFancyLatam: 3, unit: '%' }
+  { name: 'Residuos Químicos', type: 'condicion', category: 'grave', unit: '%', tolerances: { 'EF-SEM10': 0, 'F-SEM10': 0, 'F-SEM20': 0, 'F-SEM30': 0 } },
+  { name: 'Polvo / Tierra', type: 'condicion', category: 'grave', unit: '%', tolerances: { 'EF-SEM10': 0, 'F-SEM10': 0, 'F-SEM20': 0, 'F-SEM30': 0 } },
+  { name: 'Insectos Cuarentenarios', type: 'plagas', category: 'grave', unit: '%', tolerances: { 'EF-SEM10': 0, 'F-SEM10': 0, 'F-SEM20': 0, 'F-SEM30': 0 } },
+  { name: 'Ácaros / Insectos Acompañantes', type: 'plagas', category: 'grave', unit: '%', tolerances: { 'EF-SEM10': 0, 'F-SEM10': 0, 'F-SEM20': 0, 'F-SEM30': 0 } },
+  { name: 'Pudrición', type: 'condicion', category: 'grave', unit: '%', tolerances: { 'EF-SEM10': 0, 'F-SEM10': 0, 'F-SEM20': 0, 'F-SEM30': 0 } },
+  { name: 'Herida Abierta', type: 'condicion', category: 'grave', unit: '%', tolerances: { 'EF-SEM10': 0, 'F-SEM10': 0, 'F-SEM20': 0, 'F-SEM30': 0 } },
+  { name: 'Deshidratación Severa', type: 'condicion', category: 'grave', unit: '%', tolerances: { 'EF-SEM10': 0, 'F-SEM10': 0, 'F-SEM20': 0, 'F-SEM30': 0 } },
+  { name: 'Fruta Blanda', type: 'condicion', category: 'grave', unit: '%', tolerances: { 'EF-SEM10': 0, 'F-SEM10': 0, 'F-SEM20': 0, 'F-SEM30': 0 } },
+  { name: 'Creasing Severo', type: 'condicion', category: 'grave', unit: '%', tolerances: { 'EF-SEM10': 0, 'F-SEM10': 0, 'F-SEM20': 0, 'F-SEM30': 0 } },
+  { name: 'Bufado Severo', type: 'condicion', category: 'grave', unit: '%', tolerances: { 'EF-SEM10': 0, 'F-SEM10': 0, 'F-SEM20': 0, 'F-SEM30': 0 } },
+  { name: 'Pedúnculo Largo', type: 'calidad', category: 'leve', unit: '%', tolerances: { 'EF-SEM10': 5, 'F-SEM10': 5, 'F-SEM20': 5, 'F-SEM30': 5 } },
+  { name: 'Cuello de Botella', type: 'calidad', category: 'medio', unit: '%', tolerances: { 'EF-SEM10': 5, 'F-SEM10': 6, 'F-SEM20': 8, 'F-SEM30': 10 } },
+  { name: 'Golpe de Sol', type: 'calidad', category: 'medio', unit: '%', tolerances: { 'EF-SEM10': 5, 'F-SEM10': 6, 'F-SEM20': 8, 'F-SEM30': 10 } },
+  { name: 'Herida Cicatrizada Leve', type: 'calidad', category: 'leve', unit: '%', tolerances: { 'EF-SEM10': 5, 'F-SEM10': 6, 'F-SEM20': 8, 'F-SEM30': 10 } },
+  { name: 'Rugosidad', type: 'calidad', category: 'medio', unit: '%', tolerances: { 'EF-SEM10': 5, 'F-SEM10': 6, 'F-SEM20': 8, 'F-SEM30': 10 } },
+  { name: 'Fumagina', type: 'calidad', category: 'medio', unit: '%', tolerances: { 'EF-SEM10': 5, 'F-SEM10': 6, 'F-SEM20': 8, 'F-SEM30': 10 } },
+  { name: 'Descalibre', type: 'calidad', category: 'medio', unit: '%', tolerances: { 'EF-SEM10': 4, 'F-SEM10': 5, 'F-SEM20': 6, 'F-SEM30': 10 } },
+  { name: 'Russet / Manchas (0,5 cm²)', type: 'calidad', category: 'medio', unit: '%', tolerances: { 'EF-SEM10': 5, 'F-SEM10': 7, 'F-SEM20': 10, 'F-SEM30': 10 } },
+  { name: 'Ausencia de Roseta', type: 'calidad', category: 'leve', unit: '%', tolerances: { 'EF-SEM10': 5, 'F-SEM10': 5, 'F-SEM20': 5, 'F-SEM30': 5 } },
+  { name: 'Oleocelosis Leve (0,5 cm²)', type: 'condicion', category: 'medio', unit: '%', tolerances: { 'EF-SEM10': 3, 'F-SEM10': 5, 'F-SEM20': 8, 'F-SEM30': 8 } },
+  { name: 'Bufado Leve', type: 'condicion', category: 'leve', unit: '%', tolerances: { 'EF-SEM10': 3, 'F-SEM10': 4, 'F-SEM20': 5, 'F-SEM30': 5 } },
+  { name: 'Piquetes', type: 'condicion', category: 'medio', unit: '%', tolerances: { 'EF-SEM10': 3, 'F-SEM10': 3, 'F-SEM20': 3, 'F-SEM30': 3 } }
 ];
 
-// Selector de lista de defectos por especie
+/** LIMÓN — tablas 13 (calidad) y 14 (condición) */
+export const LEMON_DEFECTS_LIST: DefectDef[] = [
+  // Calidad
+  { name: 'Sin Roseta', type: 'calidad', category: 'leve', unit: '%', tolerances: { 'CHOICE-USA': 100, 'FANCY-USA-J': 100, 'E-FANCY-J': 5 } },
+  { name: 'Fruto Deforme', type: 'calidad', category: 'medio', unit: '%', tolerances: { 'CHOICE-USA': 15, 'FANCY-USA-J': 8, 'E-FANCY-J': 5 } },
+  { name: 'Golpe de Sol', type: 'calidad', category: 'medio', unit: '%', tolerances: { 'CHOICE-USA': 15, 'FANCY-USA-J': 5, 'E-FANCY-J': 3 } },
+  { name: 'Quemadura de Sol', type: 'calidad', category: 'medio', unit: '%', tolerances: { 'CHOICE-USA': 5, 'FANCY-USA-J': 2, 'E-FANCY-J': 2 } },
+  { name: 'Herida Cicatrizada', type: 'calidad', category: 'leve', unit: '%', tolerances: { 'CHOICE-USA': 10, 'FANCY-USA-J': 5, 'E-FANCY-J': 5 } },
+  { name: 'Pedúnculo Largo', type: 'calidad', category: 'leve', unit: '%', tolerances: { 'CHOICE-USA': 5, 'FANCY-USA-J': 3, 'E-FANCY-J': 2 } },
+  { name: 'Russet', type: 'calidad', category: 'medio', unit: '%', tolerances: { 'CHOICE-USA': 15, 'FANCY-USA-J': 15, 'E-FANCY-J': 7 } },
+  { name: 'Fumagina', type: 'calidad', category: 'medio', unit: '%', tolerances: { 'CHOICE-USA': 10, 'FANCY-USA-J': 2, 'E-FANCY-J': 0 } },
+  { name: 'Fruto Redondo', type: 'calidad', category: 'medio', unit: '%', tolerances: { 'CHOICE-USA': 15, 'FANCY-USA-J': 10, 'E-FANCY-J': 4 } },
+  { name: 'Escama', type: 'plagas', category: 'grave', unit: '%', tolerances: { 'CHOICE-USA': 8, 'FANCY-USA-J': 5, 'E-FANCY-J': 0 } },
+  { name: 'Botritis en Flor', type: 'calidad', category: 'medio', unit: '%', tolerances: { 'CHOICE-USA': 12, 'FANCY-USA-J': 5, 'E-FANCY-J': 1 } },
+  { name: 'Insectos Cuarentenarios', type: 'plagas', category: 'grave', unit: '%', tolerances: { 'CHOICE-USA': 0, 'FANCY-USA-J': 0, 'E-FANCY-J': 0 } },
+  { name: 'Manchas', type: 'calidad', category: 'medio', unit: '%', tolerances: { 'CHOICE-USA': 10, 'FANCY-USA-J': 8, 'E-FANCY-J': 2 } },
+  // El Descalibre NO se considera en la sumatoria de la caja (indicación expresa de la norma)
+  { name: 'Descalibre', type: 'calidad', category: 'medio', unit: '%', excludeFromTotal: true, tolerances: { 'CHOICE-USA': 10, 'FANCY-USA-J': 10, 'E-FANCY-J': 10 } },
+  { name: 'Rugosidad', type: 'calidad', category: 'medio', unit: '%', tolerances: { 'CHOICE-USA': 15, 'FANCY-USA-J': 5, 'E-FANCY-J': 5 } },
+  { name: 'Pezón Deforme', type: 'calidad', category: 'medio', unit: '%', tolerances: { 'CHOICE-USA': 15, 'FANCY-USA-J': 10, 'E-FANCY-J': 5 } },
+  { name: 'Cuello de Botella', type: 'calidad', category: 'medio', unit: '%', tolerances: { 'CHOICE-USA': 15, 'FANCY-USA-J': 10, 'E-FANCY-J': 5 } },
+  { name: 'Ácaro de la Yema', type: 'plagas', category: 'medio', unit: '%', tolerances: { 'CHOICE-USA': 15, 'FANCY-USA-J': 10, 'E-FANCY-J': 5 } },
+  // Condición
+  { name: 'Deshidratación', type: 'condicion', category: 'grave', unit: '%', tolerances: { 'CHOICE-USA': 0, 'FANCY-USA-J': 0, 'E-FANCY-J': 0 } },
+  { name: 'Daño por Helada', type: 'condicion', category: 'grave', unit: '%', tolerances: { 'CHOICE-USA': 0, 'FANCY-USA-J': 0, 'E-FANCY-J': 0 } },
+  { name: 'Oleocelosis', type: 'condicion', category: 'medio', unit: '%', tolerances: { 'CHOICE-USA': 8, 'FANCY-USA-J': 3, 'E-FANCY-J': 2 } },
+  { name: 'Peteca', type: 'condicion', category: 'medio', unit: '%', tolerances: { 'CHOICE-USA': 5, 'FANCY-USA-J': 2, 'E-FANCY-J': 0 } },
+  { name: 'Sobremaduro (Cuaresmero)', type: 'condicion', category: 'medio', unit: '%', tolerances: { 'CHOICE-USA': 5, 'FANCY-USA-J': 0, 'E-FANCY-J': 0 } },
+  { name: 'Pudrición', type: 'condicion', category: 'grave', unit: '%', tolerances: { 'CHOICE-USA': 0, 'FANCY-USA-J': 0, 'E-FANCY-J': 0 } },
+  { name: 'Herida Abierta', type: 'condicion', category: 'grave', unit: '%', tolerances: { 'CHOICE-USA': 0, 'FANCY-USA-J': 0, 'E-FANCY-J': 0 } },
+  { name: 'Piquete', type: 'condicion', category: 'grave', unit: '%', tolerances: { 'CHOICE-USA': 0, 'FANCY-USA-J': 0, 'E-FANCY-J': 0 } },
+  { name: 'Machucón', type: 'condicion', category: 'grave', unit: '%', tolerances: { 'CHOICE-USA': 0, 'FANCY-USA-J': 0, 'E-FANCY-J': 0 } },
+  { name: 'Daño Mecánico', type: 'condicion', category: 'grave', unit: '%', tolerances: { 'CHOICE-USA': 0, 'FANCY-USA-J': 0, 'E-FANCY-J': 0 } },
+  { name: 'Daño de Espina (cicatrizado)', type: 'condicion', category: 'medio', unit: '%', tolerances: { 'CHOICE-USA': 5, 'FANCY-USA-J': 2, 'E-FANCY-J': 0 } }
+];
+
+/** PALTA — tabla de tolerancias (graves 5% / leves 7% / total 12%) */
+export const AVOCADO_DEFECTS_LIST: DefectDef[] = [
+  // Graves
+  { name: 'Residuos Químicos', type: 'condicion', category: 'grave', unit: '%', tolerances: { 'PALTA-STD': 0 } },
+  { name: 'Pudrición', type: 'condicion', category: 'grave', unit: '%', tolerances: { 'PALTA-STD': 0 } },
+  { name: 'Polvo / Tierra / Fumagina', type: 'calidad', category: 'grave', unit: '%', tolerances: { 'PALTA-STD': 0 } },
+  { name: 'Daño de Helada', type: 'condicion', category: 'grave', unit: '%', tolerances: { 'PALTA-STD': 0 } },
+  { name: 'Insectos Cuarentenarios', type: 'plagas', category: 'grave', unit: '%', tolerances: { 'PALTA-STD': 0 } },
+  { name: 'Daño de Trips (> 2 cm²)', type: 'plagas', category: 'grave', unit: '%', tolerances: { 'PALTA-STD': 5 } },
+  { name: 'Inserción Desgarrada', type: 'condicion', category: 'grave', unit: '%', tolerances: { 'PALTA-STD': 0 } },
+  { name: 'Deformación Severa', type: 'calidad', category: 'grave', unit: '%', tolerances: { 'PALTA-STD': 0 } },
+  { name: 'Herida Abierta', type: 'condicion', category: 'grave', unit: '%', tolerances: { 'PALTA-STD': 0 } },
+  { name: 'Machucones (> 0,5 cm²)', type: 'condicion', category: 'grave', unit: '%', tolerances: { 'PALTA-STD': 2 } },
+  { name: 'Daño de Tijera Cicatrizada (> 0,5 cm²)', type: 'condicion', category: 'grave', unit: '%', tolerances: { 'PALTA-STD': 2 } },
+  { name: 'Quemado de Sol Severo', type: 'calidad', category: 'grave', unit: '%', tolerances: { 'PALTA-STD': 0 } },
+  { name: 'Herida Cicatrizada (mordedura roedor)', type: 'condicion', category: 'grave', unit: '%', tolerances: { 'PALTA-STD': 0 } },
+  { name: 'Russet Estriado (> 1 cm²)', type: 'calidad', category: 'grave', unit: '%', tolerances: { 'PALTA-STD': 0 } },
+  { name: 'Russet Suave (> 2 cm²)', type: 'calidad', category: 'grave', unit: '%', tolerances: { 'PALTA-STD': 5 } },
+  { name: 'Daño de Roce (nivel 4)', type: 'condicion', category: 'grave', unit: '%', tolerances: { 'PALTA-STD': 0 } },
+  { name: 'Fruto Etiolado', type: 'calidad', category: 'grave', unit: '%', tolerances: { 'PALTA-STD': 0 } },
+  { name: 'Deshidratación', type: 'condicion', category: 'grave', unit: '%', tolerances: { 'PALTA-STD': 0 } },
+  { name: 'Fruta Rojiza', type: 'calidad', category: 'grave', unit: '%', tolerances: { 'PALTA-STD': 0 } },
+  { name: 'Otra Variedad', type: 'calidad', category: 'grave', unit: '%', tolerances: { 'PALTA-STD': 0 } },
+  // Leves
+  { name: 'Deformación Leve', type: 'calidad', category: 'leve', unit: '%', tolerances: { 'PALTA-STD': 4 } },
+  { name: 'Pedúnculo Desprendido', type: 'condicion', category: 'leve', unit: '%', tolerances: { 'PALTA-STD': 0 } },
+  { name: 'Daño de Roce (nivel 3)', type: 'condicion', category: 'leve', unit: '%', tolerances: { 'PALTA-STD': 2 } },
+  { name: 'Quimera', type: 'calidad', category: 'leve', unit: '%', tolerances: { 'PALTA-STD': 0 } },
+  { name: 'Pedúnculo Largo', type: 'calidad', category: 'leve', unit: '%', tolerances: { 'PALTA-STD': 4 } },
+  { name: 'Descalibre', type: 'calidad', category: 'leve', unit: '%', tolerances: { 'PALTA-STD': 2 } },
+  { name: 'Golpe de Sol', type: 'calidad', category: 'leve', unit: '%', tolerances: { 'PALTA-STD': 2 } }
+];
+
 export function getDefectsList(species: Species): DefectDef[] {
-  return species === 'Mandarina' ? MANDARIN_DEFECTS_LIST : ORANGE_DEFECTS_LIST;
+  if (species === 'Mandarina') return MANDARIN_DEFECTS_LIST;
+  if (species === 'Limón') return LEMON_DEFECTS_LIST;
+  if (species === 'Palta') return AVOCADO_DEFECTS_LIST;
+  return ORANGE_DEFECTS_LIST;
 }
 
-// Totales máximos de defectos en la caja por categoría (% total de la caja)
+/** Tolerancia individual del defecto en la categoría del proceso */
+export function getTolerance(
+  def: { tolerances?: Partial<Record<ExportCategory, number>>; tolerance?: number },
+  category: ExportCategory
+): number {
+  if (def.tolerances && def.tolerances[category] !== undefined) return def.tolerances[category] as number;
+  if (typeof def.tolerance === 'number') return def.tolerance;
+  return 0;
+}
+
+/** Total máximo de defectos permitido en la caja */
 export function getMaxTotalCaja(species: Species, category: ExportCategory): number {
   if (species === 'Mandarina') {
-    if (category === 'EXTRA-FANCY') return 10;
-    if (category === 'FANCY') return 12;
-    return 14; // FANCY-LATAM
+    const m: Record<string, number> = { 'EF-SEM10': 10, 'F-SEM10': 11, 'F-SEM20': 12, 'F-SEM30': 14 };
+    return m[category] ?? 12;
   }
-  // Naranja
-  if (category === 'EXTRA-FANCY') return 10;
-  return 12;
+  if (species === 'Limón') {
+    // La norma fija el total por CONDICIÓN; se usa como techo de la caja
+    const m: Record<string, number> = { 'CHOICE-USA': 8, 'FANCY-USA-J': 3, 'E-FANCY-J': 2 };
+    return m[category] ?? 8;
+  }
+  if (species === 'Palta') return 12;
+  return category === 'EXTRA-FANCY' ? 10 : 12;
 }
 
-// Total máximo de defectos de CALIDAD por categoría
+/** Total máximo de defectos de CALIDAD */
 export function getMaxCalidad(species: Species, category: ExportCategory): number {
   if (species === 'Mandarina') {
-    if (category === 'EXTRA-FANCY') return 7;
-    if (category === 'FANCY') return 10;
-    return 12; // FANCY-LATAM
+    const m: Record<string, number> = { 'EF-SEM10': 10, 'F-SEM10': 11, 'F-SEM20': 12, 'F-SEM30': 14 };
+    return m[category] ?? 12;
   }
-  if (category === 'EXTRA-FANCY') return 7;
-  return 12;
+  if (species === 'Limón') return 100; // la norma no fija techo de calidad, solo por defecto individual
+  if (species === 'Palta') return 7;   // total defectos leves
+  return category === 'EXTRA-FANCY' ? 7 : 12;
 }
 
-// Devuelve la tolerancia individual de un defecto según la categoría
-export function getTolerance(def: { toleranceExtraFancy: number; toleranceFancy: number; toleranceFancyLatam: number }, category: ExportCategory): number {
-  if (category === 'EXTRA-FANCY') return def.toleranceExtraFancy;
-  if (category === 'FANCY') return def.toleranceFancy;
-  return def.toleranceFancyLatam;
+/** Palta: techo específico de defectos graves */
+export function getMaxGraves(species: Species): number | null {
+  return species === 'Palta' ? 5 : null;
+}
+
+// =============================================================
+// PARÁMETROS DE MADUREZ POR ESPECIE
+// =============================================================
+export interface MaturityParam {
+  key: string;
+  label: string;
+  unit: string;
+  min?: number;
+  max?: number;
+  help: string;
+}
+
+export const MATURITY_BY_SPECIES: Record<Species, MaturityParam[]> = {
+  Naranja: [
+    { key: 'brix', label: 'Sólidos solubles', unit: '°Bx', min: 9, help: '≥10 Japón/Corea temprano · ≥9,0 USA/Canadá/Europa' },
+    { key: 'acidez', label: 'Acidez total', unit: '%', max: 1.45, help: '≤1,45 Japón/Corea temprano · ≤1,4 resto' },
+    { key: 'ratio', label: 'Relación SS/AT', unit: '', min: 7.5, help: '≥8,0 Japón/Corea · ≥9,1 USA · ≥7,5 Canadá/Europa. Bajo 7,9 queda en guarda' }
+  ],
+  Mandarina: [
+    { key: 'brix', label: 'Sólidos solubles', unit: '°Bx', min: 9, help: "10° Walmart/Sam's · 9,0° USA y otros mercados" },
+    { key: 'acidez', label: 'Acidez (ác. cítrico)', unit: '%', max: 1.4, help: '1,0% Walmart · 0,90–1,4% USA · 0,85–1,4% otros' },
+    { key: 'ratio', label: 'Relación SS/Acidez', unit: '', min: 7, help: "≥9,0 Walmart/Sam's · ≥7,0 USA y otros · máximo 14,0" },
+    { key: 'jugo', label: 'Contenido de jugo', unit: '%', min: 40, help: 'Igual o superior a 40%' }
+  ],
+  'Limón': [
+    { key: 'presion', label: 'Resistencia a la presión', unit: 'lbs', min: 6, help: '<4 no cosechar · 4–6 cosechar con extremo cuidado · ≥6 normal' },
+    { key: 'jugo', label: 'Contenido de jugo', unit: '%', min: 30, help: 'Parámetro de madurez de cosecha' }
+  ],
+  Palta: [
+    { key: 'materiaSeca', label: 'Materia seca (promedio)', unit: '%', min: 23, help: '≥23% Europa/Japón · ≥22% USA. Muestra de 5 frutos' },
+    { key: 'frutosBajo21', label: 'Frutos bajo 21% MS', unit: 'frutos', max: 1, help: 'Rechazo: 1 fruto (Europa/Japón) · 2 frutos (USA)' }
+  ]
+};
+
+export function getMaturityParams(species: Species): MaturityParam[] {
+  return MATURITY_BY_SPECIES[species] || [];
+}
+
+/** Evalúa si una lectura de madurez cumple el criterio */
+export function evaluarMadurez(param: MaturityParam, valor: number): boolean {
+  if (param.min !== undefined && valor < param.min) return false;
+  if (param.max !== undefined && valor > param.max) return false;
+  return true;
 }
 
 export const GENERAL_TOLERANCES = {

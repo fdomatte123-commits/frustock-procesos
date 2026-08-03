@@ -1,21 +1,41 @@
 import React, { useState } from 'react';
 import { FileText, Download, CheckCircle2, AlertCircle, ArrowLeft, Layers, ShieldCheck, Box } from 'lucide-react';
-import { ProcessData } from '../types/process';
+import { ProcessData, ProcessVerdict, calcularEstadisticasPeso } from '../types/process';
 import { PDFReportGenerator } from '../services/pdfGenerator';
+import { ProcessStorageService } from '../services/storage';
+import { BackupService, generarFolio } from '../services/backup';
+import { AuditLog } from '../services/session';
 
 interface ProcessSummaryScreenProps {
   process: ProcessData;
+  onUpdateProcess: (p: ProcessData) => void;
   onBackToSampling: () => void;
 }
 
 export const ProcessSummaryScreen: React.FC<ProcessSummaryScreenProps> = ({
   process,
+  onUpdateProcess,
   onBackToSampling
 }) => {
   const [isGenerating, setIsGenerating] = useState(false);
   const [progress, setProgress] = useState(0);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [backupMsg, setBackupMsg] = useState<string | null>(null);
+  const [verdictNote, setVerdictNote] = useState(process.verdictNote || '');
+
+  // Veredicto del lote: lo decide el inspector, no la app
+  const definirVeredicto = (v: ProcessVerdict) => {
+    const actualizado: ProcessData = {
+      ...process,
+      verdict: v,
+      verdictNote: verdictNote.trim(),
+      updatedAt: new Date().toISOString()
+    };
+    ProcessStorageService.saveCurrentProcess(actualizado);
+    onUpdateProcess(actualizado);
+    AuditLog.registrar('Veredicto del lote', `${v}${verdictNote ? ' · ' + verdictNote : ''}`, process.processNumber);
+  };
 
   const totalBoxes = process.boxes ? process.boxes.length : 0;
 
@@ -37,11 +57,27 @@ export const ProcessSummaryScreen: React.FC<ProcessSummaryScreenProps> = ({
       setErrorMessage(null);
       setSuccessMessage(null);
 
-      await PDFReportGenerator.generateProcessPDF(process, (p) => {
+      // Asignar folio la primera vez que se emite el informe
+      let paraInforme = process;
+      if (!paraInforme.folio) {
+        paraInforme = { ...process, folio: generarFolio(), updatedAt: new Date().toISOString() };
+        ProcessStorageService.saveCurrentProcess(paraInforme);
+        onUpdateProcess(paraInforme);
+      }
+
+      await PDFReportGenerator.generateProcessPDF(paraInforme, (p) => {
         setProgress(p);
       });
 
-      setSuccessMessage(`✓ Reporte PDF de ${totalBoxes} páginas generado y descargado correctamente.`);
+      AuditLog.registrar('Informe generado', `Folio ${paraInforme.folio} · ${totalBoxes} cajas`, process.processNumber);
+
+      // Respaldo en la planilla (no bloquea la descarga si falla)
+      if (BackupService.configurado()) {
+        const ok = await BackupService.sincronizar(paraInforme);
+        setBackupMsg(ok ? 'Respaldado en Google Sheets.' : 'Sin conexión: quedó pendiente de respaldo.');
+      }
+
+      setSuccessMessage(`✓ Informe ${paraInforme.folio} generado (${totalBoxes + 1} páginas).`);
     } catch (err: any) {
       console.error(err);
       setErrorMessage(err.message || 'Error al generar el PDF.');
@@ -156,6 +192,65 @@ export const ProcessSummaryScreen: React.FC<ProcessSummaryScreenProps> = ({
         <div style={{ background: 'rgba(16, 185, 129, 0.15)', border: '1px solid #10B981', color: '#34D399', padding: '14px', borderRadius: '10px', marginBottom: '20px', display: 'flex', alignItems: 'center', gap: '10px' }}>
           <CheckCircle2 size={20} />
           <span>{successMessage}</span>
+        </div>
+      )}
+
+      {/* VEREDICTO DEL LOTE — lo decide el inspector */}
+      <div style={{ background: '#0F172A', border: '1px solid #334155', borderRadius: '12px', padding: '16px', marginBottom: '20px' }}>
+        <h4 style={{ fontSize: '0.9rem', fontWeight: 800, color: 'white', margin: '0 0 4px' }}>
+          Resolución del lote
+        </h4>
+        <p style={{ fontSize: '0.78rem', color: '#94A3B8', margin: '0 0 12px' }}>
+          La app calcula caja por caja; la decisión final del lote la tomas tú.
+        </p>
+
+        <textarea
+          className="form-textarea"
+          rows={2}
+          placeholder="Observación o justificación de la resolución (opcional)"
+          value={verdictNote}
+          onChange={e => setVerdictNote(e.target.value)}
+          style={{ marginBottom: '10px' }}
+        />
+
+        <div style={{ display: 'flex', gap: '10px' }}>
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={() => definirVeredicto('ACEPTADO')}
+            style={{
+              flex: 1, justifyContent: 'center',
+              ...(process.verdict === 'ACEPTADO' ? { background: '#059669', borderColor: '#059669', color: 'white' } : {})
+            }}
+          >
+            <CheckCircle2 size={18} />
+            <span>Lote aceptado</span>
+          </button>
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={() => definirVeredicto('OBJETADO')}
+            style={{
+              flex: 1, justifyContent: 'center',
+              ...(process.verdict === 'OBJETADO' ? { background: '#DC2626', borderColor: '#DC2626', color: 'white' } : {})
+            }}
+          >
+            <AlertCircle size={18} />
+            <span>Lote objetado</span>
+          </button>
+        </div>
+
+        {process.verdict && process.verdict !== 'PENDIENTE' && (
+          <div style={{ fontSize: '0.75rem', color: '#64748B', marginTop: '10px' }}>
+            Resolución registrada: <strong style={{ color: process.verdict === 'ACEPTADO' ? '#34D399' : '#F87171' }}>{process.verdict}</strong>
+            {process.folio ? ` · Folio ${process.folio}` : ''}
+          </div>
+        )}
+      </div>
+
+      {backupMsg && (
+        <div style={{ background: 'rgba(59,130,246,0.12)', border: '1px solid #3B82F6', color: '#93C5FD', padding: '10px 14px', borderRadius: '10px', fontSize: '0.8rem', marginBottom: '16px' }}>
+          {backupMsg}
         </div>
       )}
 
