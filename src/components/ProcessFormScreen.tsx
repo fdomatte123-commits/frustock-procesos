@@ -1,15 +1,17 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { ClipboardList, ArrowRight, Sparkles, CheckCircle2 } from 'lucide-react';
 import { ProcessData, ExportCategory, Species } from '../types/process';
 import { ProcessStorageService } from '../services/storage';
 
 interface ProcessFormScreenProps {
   initialData: ProcessData | null;
+  qrPrefill?: Partial<ProcessData> | null;
   onSaveAndProceed: (data: ProcessData) => void;
 }
 
 export const ProcessFormScreen: React.FC<ProcessFormScreenProps> = ({
   initialData,
+  qrPrefill,
   onSaveAndProceed
 }) => {
   const [formData, setFormData] = useState<Partial<ProcessData>>(() => {
@@ -17,6 +19,14 @@ export const ProcessFormScreen: React.FC<ProcessFormScreenProps> = ({
   });
 
   const [errors, setErrors] = useState<Record<string, string>>({});
+
+  // Datos leídos desde el QR de la etiqueta: sobrescriben solo los campos que trae
+  useEffect(() => {
+    if (qrPrefill && Object.keys(qrPrefill).length > 0) {
+      setFormData(prev => ({ ...prev, ...qrPrefill }));
+      setErrors({});
+    }
+  }, [qrPrefill]);
 
   const handleChange = (field: keyof ProcessData, value: any) => {
     setFormData(prev => ({ ...prev, [field]: value }));

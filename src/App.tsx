@@ -5,11 +5,14 @@ import { BoxSamplingScreen } from './components/BoxSamplingScreen';
 import { ProcessSummaryScreen } from './components/ProcessSummaryScreen';
 import { ProcessData } from './types/process';
 import { ProcessStorageService } from './services/storage';
-import { QRScannerService } from './services/qrScanner';
+import { QRScannerService, QRPackingPayload } from './services/qrScanner';
+import { QRScanPanel } from './components/QRScanPanel';
 
 export const App: React.FC = () => {
   const [currentStep, setCurrentStep] = useState<'form' | 'sampling' | 'summary'>('form');
   const [activeProcess, setActiveProcess] = useState<ProcessData | null>(null);
+  const [isQROpen, setIsQROpen] = useState(false);
+  const [qrPrefill, setQrPrefill] = useState<Partial<ProcessData> | null>(null);
 
   useEffect(() => {
     // Load active process if stored offline
@@ -39,17 +42,11 @@ export const App: React.FC = () => {
     setCurrentStep('form');
   };
 
-  // Phase 2 Roadmap: Simulated QR Code Scan Handler
-  const handleSimulateQRScan = () => {
-    const mockQRRaw = "FRUSTOCK|CAL:Calibre 56|LOT:LOTE-2026-QR|PROD:PR-9900|SN:TAG-88219";
-    const parsed = QRScannerService.parsePackingTag(mockQRRaw);
-
-    alert(`[FASE 2 - ESCÁNER QR DE ETIQUETA]\n\nLectura simulación QR packing:\n` +
-      `• Calibre: ${parsed.caliber}\n` +
-      `• Lote: ${parsed.lot}\n` +
-      `• Código Productor: ${parsed.producerCode}\n` +
-      `• Serie Caja: ${parsed.boxSerial}\n\n` +
-      `Módulo desacoplado listo para integrar la cámara nativa.`);
+  // Lectura de etiqueta QR: prellena los datos del proceso
+  const handleQRApply = (payload: QRPackingPayload) => {
+    const datos = QRScannerService.toProcessData(payload);
+    setQrPrefill(datos);
+    setCurrentStep('form');
   };
 
   return (
@@ -58,14 +55,19 @@ export const App: React.FC = () => {
         currentStep={currentStep}
         onSelectStep={(step) => setCurrentStep(step)}
         activeProcess={activeProcess}
-        onSimulateQRScan={handleSimulateQRScan}
+        onSimulateQRScan={() => setIsQROpen(true)}
         onNewProcess={handleNewProcess}
       />
+
+      {isQROpen && (
+        <QRScanPanel onClose={() => setIsQROpen(false)} onApply={handleQRApply} />
+      )}
 
       <main className="content-wrapper">
         {currentStep === 'form' && (
           <ProcessFormScreen
             initialData={activeProcess}
+            qrPrefill={qrPrefill}
             onSaveAndProceed={handleProcessSaved}
           />
         )}
