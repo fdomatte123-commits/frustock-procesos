@@ -168,7 +168,11 @@ export const ProcessSummaryScreen: React.FC<ProcessSummaryScreenProps> = ({
         style={{ opacity: isGenerating ? 0.7 : 1, padding: '16px' }}
       >
         <Download size={22} />
-        <span>{isGenerating ? 'Compilando PDF Multipágina...' : `Descargar Informe PDF (${totalBoxes} Páginas)`}</span>
+        <span>
+          {isGenerating
+            ? (progress <= 2 ? 'Preparando generador...' : 'Compilando PDF multipágina...')
+            : `Descargar Informe PDF (${totalBoxes + 1} páginas)`}
+        </span>
       </button>
     </div>
   );

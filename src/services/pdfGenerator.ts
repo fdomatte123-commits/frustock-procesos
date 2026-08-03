@@ -1,6 +1,25 @@
-import jsPDF from 'jspdf';
-import html2canvas from 'html2canvas';
+import type jsPDFType from 'jspdf';
 import { ProcessData, getTolerance } from '../types/process';
+
+// jsPDF y html2canvas pesan ~600 kB y solo se usan al exportar.
+// Se cargan bajo demanda para que la app abra rápido en terreno con señal débil.
+let _libsPromise: Promise<{
+  jsPDF: typeof jsPDFType;
+  html2canvas: typeof import('html2canvas').default;
+}> | null = null;
+
+function cargarLibreriasPDF() {
+  if (!_libsPromise) {
+    _libsPromise = Promise.all([
+      import('jspdf'),
+      import('html2canvas')
+    ]).then(([jspdfMod, h2cMod]) => ({
+      jsPDF: jspdfMod.default,
+      html2canvas: h2cMod.default
+    }));
+  }
+  return _libsPromise;
+}
 
 // Escapa texto para insertarlo con seguridad dentro de innerHTML
 function esc(s: any): string {
@@ -32,6 +51,10 @@ export class PDFReportGenerator {
     if (!process.boxes || process.boxes.length === 0) {
       throw new Error('No hay cajas muestreadas para generar el informe PDF.');
     }
+
+    // Descarga de las librerías pesadas solo cuando realmente se exporta
+    if (onProgress) onProgress(1);
+    const { jsPDF, html2canvas } = await cargarLibreriasPDF();
 
     const renderContainer = document.createElement('div');
     renderContainer.style.position = 'absolute';
