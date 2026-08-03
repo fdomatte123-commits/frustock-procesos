@@ -1,7 +1,20 @@
 import { ProcessData, BoxSampling } from '../types/process';
 
 const STORAGE_KEY = 'FRUSTOCK_ACTIVE_PROCESS_V1';
-const HISTORY_KEY = 'FRUSTOCK_PROCESS_HISTORY_V1';
+const HISTORY_KEY = 'FRUSTOCK_PROCESS_HISTORY_V2'; // V2: historial sin fotos
+
+/** Metadatos de un proceso para el historial (sin cajas ni imágenes) */
+export interface ProcessSummary {
+  id: string;
+  processNumber: string;
+  species: string;
+  variety: string;
+  producerName: string;
+  lot: string;
+  boxCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
 
 export class ProcessStorageService {
   /**
@@ -66,20 +79,49 @@ export class ProcessStorageService {
     return updatedProcess;
   }
 
+  /**
+   * Historial LIVIANO: guarda solo metadatos del proceso, nunca cajas ni fotos.
+   * Antes se duplicaba el proceso completo (con base64) en cada guardado, lo que
+   * reventaba la cuota de localStorage y congelaba la app al serializar megabytes.
+   */
   private static saveToHistory(process: ProcessData): void {
     try {
       const historyRaw = localStorage.getItem(HISTORY_KEY);
-      const history: ProcessData[] = historyRaw ? JSON.parse(historyRaw) : [];
+      const history: ProcessSummary[] = historyRaw ? JSON.parse(historyRaw) : [];
+
+      const resumen: ProcessSummary = {
+        id: process.id,
+        processNumber: process.processNumber,
+        species: process.species,
+        variety: process.variety,
+        producerName: process.producerName,
+        lot: process.lot,
+        boxCount: process.boxes ? process.boxes.length : 0,
+        createdAt: process.createdAt,
+        updatedAt: process.updatedAt
+      };
+
       const index = history.findIndex(p => p.id === process.id);
       if (index >= 0) {
-        history[index] = process;
+        history[index] = resumen;
       } else {
-        history.unshift(process);
+        history.unshift(resumen);
       }
       localStorage.setItem(HISTORY_KEY, JSON.stringify(history.slice(0, 20)));
     } catch (e) {
-      // El historial es secundario: si no cabe, no interrumpir el guardado principal
+      // El historial es secundario: si falla, no interrumpir el guardado principal
       console.warn('No se pudo actualizar el historial (secundario):', e);
+    }
+  }
+
+  /** Lista de procesos anteriores (solo metadatos) */
+  static getHistory(): ProcessSummary[] {
+    try {
+      const raw = localStorage.getItem(HISTORY_KEY);
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
     }
   }
 

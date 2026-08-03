@@ -9,6 +9,20 @@ function esc(s: any): string {
   return div.innerHTML;
 }
 
+/**
+ * Escala tipográfica única del informe.
+ * Antes había 34 tamaños inline distintos sin criterio; esto los unifica.
+ */
+const FS = {
+  titulo: '17px',
+  subtitulo: '13px',
+  seccion: '11px',
+  dato: '10px',
+  tabla: '10px',
+  meta: '8.5px',
+  micro: '8px'
+} as const;
+
 export class PDFReportGenerator {
   /**
    * Genera un PDF con exactamente 1 página por caja muestreada.
@@ -30,49 +44,248 @@ export class PDFReportGenerator {
     const pageW = 210;
     const pageH = 297;
 
+    // En móvil bajamos la escala: con 20 cajas a scale 2 la pestaña se queda sin memoria
+    const esMovil = typeof window !== 'undefined' && window.innerWidth <= 768;
+    const escala = esMovil ? 1.5 : 2;
+
+    // Renderiza un bloque HTML y lo agrega como página, liberando memoria después
+    const agregarPagina = async (html: string, esPrimera: boolean) => {
+      renderContainer.innerHTML = html;
+      const pageElement = renderContainer.firstElementChild as HTMLElement;
+
+      const canvas = await html2canvas(pageElement, {
+        scale: escala,
+        useCORS: true,
+        logging: false,
+        backgroundColor: '#FFFFFF',
+        width: 794
+      });
+
+      const imgData = canvas.toDataURL('image/jpeg', 0.88);
+
+      if (!esPrimera) doc.addPage('a4', 'portrait');
+
+      let renderW = pageW;
+      let renderH = (canvas.height * pageW) / canvas.width;
+      if (renderH > pageH) {
+        renderH = pageH;
+        renderW = (canvas.width * pageH) / canvas.height;
+      }
+      doc.addImage(imgData, 'JPEG', (pageW - renderW) / 2, 0, renderW, renderH);
+
+      // Liberar el canvas y ceder el hilo: evita el crash y el congelamiento
+      canvas.width = 0;
+      canvas.height = 0;
+      await new Promise(r => setTimeout(r, 0));
+    };
+
     try {
       const totalBoxes = process.boxes.length;
 
+      // Página 1: resumen del proceso completo (lo primero que mira un recibidor)
+      if (onProgress) onProgress(3);
+      await agregarPagina(this.buildSummaryPageHTML(process), true);
+
+      // Una página por caja
       for (let index = 0; index < totalBoxes; index++) {
         const box = process.boxes[index];
-        if (onProgress) onProgress(Math.round(((index + 1) / totalBoxes) * 100));
+        if (onProgress) onProgress(Math.round(((index + 1) / totalBoxes) * 95) + 4);
+        await agregarPagina(this.buildSingleBoxPageHTML(process, box, index + 1, totalBoxes), false);
+      }
 
-        renderContainer.innerHTML = this.buildSingleBoxPageHTML(process, box, index + 1, totalBoxes);
-        const pageElement = renderContainer.firstElementChild as HTMLElement;
-
-        // Sin height fija: html2canvas captura la altura real (no recorta)
-        const canvas = await html2canvas(pageElement, {
-          scale: 2,
-          useCORS: true,
-          logging: false,
-          backgroundColor: '#FFFFFF',
-          width: 794
-        });
-
-        const imgData = canvas.toDataURL('image/jpeg', 0.92);
-
-        if (index > 0) doc.addPage('a4', 'portrait');
-
-        // Ajustar a una página preservando proporción (si sobra alto, se reduce)
-        let renderW = pageW;
-        let renderH = (canvas.height * pageW) / canvas.width;
-        if (renderH > pageH) {
-          renderH = pageH;
-          renderW = (canvas.width * pageH) / canvas.height;
+      // Numeración estampada sobre el PDF ya generado (fiable ante cualquier corte)
+      try {
+        const totalPag = doc.getNumberOfPages();
+        const num = (process.processNumber || 'S/N').toString();
+        for (let p = 1; p <= totalPag; p++) {
+          doc.setPage(p);
+          doc.setFontSize(7.5);
+          doc.setTextColor(150, 158, 170);
+          doc.text(`Proceso ${num} · ${process.producerName || ''}`.trim(), 8, pageH - 4);
+          doc.text(`Página ${p} de ${totalPag}`, pageW - 8, pageH - 4, { align: 'right' });
         }
-        const offsetX = (pageW - renderW) / 2;
-        doc.addImage(imgData, 'JPEG', offsetX, 0, renderW, renderH);
+      } catch (pagErr) {
+        console.warn('No se pudo numerar las páginas:', pagErr);
       }
 
       const especie = process.species || 'Naranja';
-      const num = (process.processNumber || 'SN').toString().replace(/[\/\\?%*:|"<>]/g, '');
-      const fileName = `FRUSTOCK_${especie}_${num}_${new Date().toISOString().split('T')[0]}.pdf`;
+      const numLimpio = (process.processNumber || 'SN').toString().replace(/[\/\\?%*:|"<>]/g, '');
+      const fileName = `FRUSTOCK_${especie}_${numLimpio}_${new Date().toISOString().split('T')[0]}.pdf`;
       doc.save(fileName);
     } finally {
       if (document.body.contains(renderContainer)) {
         document.body.removeChild(renderContainer);
       }
     }
+  }
+
+  /**
+   * PORTADA: resumen del proceso completo.
+   * Responde de un vistazo "¿cómo salió el lote?" antes del detalle caja por caja.
+   */
+  private static buildSummaryPageHTML(process: ProcessData): string {
+    const boxes = process.boxes || [];
+    const total = boxes.length;
+    const aprobadas = boxes.filter(b => b.status === 'APROBADA').length;
+    const objetadas = total - aprobadas;
+    const pctAprob = total > 0 ? (aprobadas / total) * 100 : 0;
+    const pctObj = 100 - pctAprob;
+
+    // Distribución de calibres
+    const porCalibre: Record<string, number> = {};
+    boxes.forEach(b => {
+      const k = b.caliberLabel ? `${b.caliber} (${b.caliberLabel})` : b.caliber;
+      porCalibre[k] = (porCalibre[k] || 0) + 1;
+    });
+    const calibres = Object.entries(porCalibre).sort((a, b) => b[1] - a[1]);
+    const maxCal = Math.max(...calibres.map(c => c[1]), 1);
+
+    // Top defectos por frecuencia y % promedio
+    const acumDefectos: Record<string, { veces: number; suma: number }> = {};
+    boxes.forEach(b => (b.defects || []).forEach(d => {
+      if (!acumDefectos[d.name]) acumDefectos[d.name] = { veces: 0, suma: 0 };
+      acumDefectos[d.name].veces += 1;
+      acumDefectos[d.name].suma += d.countOrPercentage;
+    }));
+    const topDefectos = Object.entries(acumDefectos)
+      .map(([name, v]) => ({ name, veces: v.veces, prom: v.suma / v.veces }))
+      .sort((a, b) => b.veces - a.veces)
+      .slice(0, 5);
+    const maxProm = Math.max(...topDefectos.map(d => d.prom), 1);
+
+    // Promedios de calidad y condición sobre el total de cajas
+    const promTipo = (tipo: 'calidad' | 'condicion') => {
+      if (total === 0) return 0;
+      const suma = boxes.reduce((s, b) =>
+        s + (b.defects || []).filter(d => d.type === tipo).reduce((x, d) => x + d.countOrPercentage, 0), 0);
+      return suma / total;
+    };
+    const promCalidad = promTipo('calidad');
+    const promCondicion = promTipo('condicion');
+
+    const semColor = pctObj === 0 ? '#059669' : (pctObj <= 20 ? '#D97706' : '#DC2626');
+    const semTexto = pctObj === 0 ? 'LOTE CONFORME' : (pctObj <= 20 ? 'CON OBSERVACIONES' : 'LOTE OBJETADO');
+    const semBg = pctObj === 0 ? '#ECFDF5' : (pctObj <= 20 ? '#FFFBEB' : '#FEF2F2');
+
+    const filasCalibre = calibres.map(([cal, n]) => `
+      <tr>
+        <td style="padding:5px 8px; font-weight:600; color:#1E293B;">${esc(cal)}</td>
+        <td style="padding:5px 8px; width:55%;">
+          <div style="background:#E2E8F0; border-radius:3px; height:9px; position:relative;">
+            <div style="width:${(n / maxCal) * 100}%; background:#132542; height:9px; border-radius:3px;"></div>
+          </div>
+        </td>
+        <td style="padding:5px 8px; text-align:right; font-weight:800; color:#0F172A;">${n}</td>
+        <td style="padding:5px 8px; text-align:right; color:#64748B;">${((n / total) * 100).toFixed(1)}%</td>
+      </tr>`).join('');
+
+    const filasDefectos = topDefectos.length > 0 ? topDefectos.map(d => `
+      <tr>
+        <td style="padding:5px 8px; font-weight:600; color:#1E293B;">${esc(d.name)}</td>
+        <td style="padding:5px 8px; width:45%;">
+          <div style="background:#E2E8F0; border-radius:3px; height:9px;">
+            <div style="width:${(d.prom / maxProm) * 100}%; background:#DC2626; height:9px; border-radius:3px;"></div>
+          </div>
+        </td>
+        <td style="padding:5px 8px; text-align:right; font-weight:800; color:#DC2626;">${d.prom.toFixed(1)}%</td>
+        <td style="padding:5px 8px; text-align:right; color:#64748B;">${d.veces} caja(s)</td>
+      </tr>`).join('')
+      : `<tr><td colspan="4" style="padding:14px; text-align:center; color:#059669; font-weight:600; background:#F0FDF4;">✓ No se registraron defectos en el proceso</td></tr>`;
+
+    return `
+      <div style="width:794px; min-height:1123px; padding:34px 30px; box-sizing:border-box; background:#FFF; font-family:'Plus Jakarta Sans',sans-serif; color:#0F172A; display:flex; flex-direction:column;">
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; border-bottom:3px solid #F59E0B; padding-bottom:14px; margin-bottom:18px;">
+          <div>
+            <div style="display:flex; align-items:center; gap:8px;">
+              <div style="background:#F59E0B; color:#FFF; font-weight:800; font-size:${FS.subtitulo}; padding:4px 10px; border-radius:6px;">FRUSTOCK</div>
+              <span style="font-size:${FS.seccion}; font-weight:800; color:#334155; letter-spacing:.5px;">PROCESOS · RESUMEN DE INSPECCIÓN</span>
+            </div>
+            <h1 style="font-size:${FS.titulo}; margin:8px 0 0; font-weight:800;">Informe de calidad · ${esc(process.species)} ${esc(process.variety)}</h1>
+            <div style="font-size:${FS.meta}; color:#64748B; margin-top:3px;">Control de calidad de cajas terminadas en packing</div>
+          </div>
+          <div style="text-align:right;">
+            <div style="font-size:${FS.micro}; color:#94A3B8; font-weight:700;">FECHA DE EMISIÓN</div>
+            <div style="font-size:${FS.subtitulo}; font-weight:800;">${new Date().toLocaleDateString('es-ES')}</div>
+            <div style="font-size:${FS.micro}; color:#94A3B8; font-weight:700; margin-top:6px;">PROCESO</div>
+            <div style="font-size:${FS.dato}; font-weight:800;">${esc(process.processNumber)}</div>
+          </div>
+        </div>
+
+        <div style="background:${semBg}; border:1.5px solid ${semColor}; border-radius:10px; padding:14px 18px; margin-bottom:18px; display:flex; justify-content:space-between; align-items:center;">
+          <div>
+            <div style="font-size:${FS.micro}; color:#64748B; font-weight:700; letter-spacing:.06em;">RESULTADO GLOBAL DEL PROCESO</div>
+            <div style="font-size:22px; font-weight:800; color:${semColor}; margin-top:2px;">${semTexto}</div>
+          </div>
+          <div style="text-align:right;">
+            <div style="font-size:28px; font-weight:800; color:${semColor}; line-height:1;">${pctAprob.toFixed(0)}%</div>
+            <div style="font-size:${FS.meta}; color:#64748B;">cajas aprobadas</div>
+          </div>
+        </div>
+
+        <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin-bottom:16px;">
+          <div style="background:#F8FAFC; border:1px solid #E2E8F0; border-radius:8px; padding:10px; text-align:center;">
+            <div style="font-size:${FS.micro}; color:#64748B; font-weight:700;">CAJAS EVALUADAS</div>
+            <div style="font-size:22px; font-weight:800;">${total}</div>
+          </div>
+          <div style="background:#F0FDF4; border:1px solid #86EFAC; border-radius:8px; padding:10px; text-align:center;">
+            <div style="font-size:${FS.micro}; color:#166534; font-weight:700;">APROBADAS</div>
+            <div style="font-size:22px; font-weight:800; color:#059669;">${aprobadas}</div>
+          </div>
+          <div style="background:#FEF2F2; border:1px solid #FCA5A5; border-radius:8px; padding:10px; text-align:center;">
+            <div style="font-size:${FS.micro}; color:#991B1B; font-weight:700;">OBJETADAS</div>
+            <div style="font-size:22px; font-weight:800; color:#DC2626;">${objetadas}</div>
+          </div>
+          <div style="background:#F8FAFC; border:1px solid #E2E8F0; border-radius:8px; padding:10px; text-align:center;">
+            <div style="font-size:${FS.micro}; color:#64748B; font-weight:700;">CATEGORÍA</div>
+            <div style="font-size:${FS.subtitulo}; font-weight:800; color:#D97706; margin-top:4px;">${esc(process.exportCategory)}</div>
+          </div>
+        </div>
+
+        <div style="display:flex; height:24px; border-radius:5px; overflow:hidden; margin-bottom:18px; border:1px solid #CBD5E1;">
+          ${aprobadas > 0 ? `<div style="width:${pctAprob}%; background:#059669; color:#FFF; font-size:${FS.meta}; font-weight:800; display:flex; align-items:center; justify-content:center;">${pctAprob.toFixed(1)}% aprobadas</div>` : ''}
+          ${objetadas > 0 ? `<div style="width:${pctObj}%; background:#DC2626; color:#FFF; font-size:${FS.meta}; font-weight:800; display:flex; align-items:center; justify-content:center;">${pctObj.toFixed(1)}% objetadas</div>` : ''}
+        </div>
+
+        <div style="background:#F8FAFC; border:1px solid #E2E8F0; border-radius:8px; padding:12px; margin-bottom:18px;">
+          <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:10px; font-size:${FS.dato};">
+            <div><span style="color:#64748B; font-size:${FS.micro}; text-transform:uppercase;">Productor</span><strong style="display:block;">${esc(process.producerName)} (${esc(process.producerCode)})</strong></div>
+            <div><span style="color:#64748B; font-size:${FS.micro}; text-transform:uppercase;">Lote / Recepción</span><strong style="display:block;">${esc(process.lot)} · ${esc(process.receptionDate)}</strong></div>
+            <div><span style="color:#64748B; font-size:${FS.micro}; text-transform:uppercase;">CSG / SDP</span><strong style="display:block;">${esc(process.csg)} | ${esc(process.sdp)}</strong></div>
+            <div><span style="color:#64748B; font-size:${FS.micro}; text-transform:uppercase;">Kg Totales</span><strong style="display:block;">${Number(process.totalKg || 0).toLocaleString()} Kg</strong></div>
+          </div>
+        </div>
+
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:16px;">
+          <div style="background:#F8FAFC; border:1px solid #E2E8F0; border-radius:8px; padding:10px;">
+            <div style="font-size:${FS.micro}; color:#64748B; font-weight:700;">PROMEDIO DEFECTOS DE CALIDAD</div>
+            <div style="font-size:20px; font-weight:800; color:${promCalidad > 7 ? '#DC2626' : '#0F172A'};">${promCalidad.toFixed(1)}%</div>
+          </div>
+          <div style="background:#F8FAFC; border:1px solid #E2E8F0; border-radius:8px; padding:10px;">
+            <div style="font-size:${FS.micro}; color:#64748B; font-weight:700;">PROMEDIO DEFECTOS DE CONDICIÓN</div>
+            <div style="font-size:20px; font-weight:800; color:${promCondicion > 5 ? '#DC2626' : '#0F172A'};">${promCondicion.toFixed(1)}%</div>
+          </div>
+        </div>
+
+        <div style="margin-bottom:16px;">
+          <h2 style="font-size:${FS.seccion}; font-weight:800; border-bottom:2px solid #132542; padding-bottom:3px; margin:0 0 4px; text-transform:uppercase;">Distribución de calibres</h2>
+          <table style="width:100%; border-collapse:collapse; font-size:${FS.tabla};">${filasCalibre}</table>
+        </div>
+
+        <div>
+          <h2 style="font-size:${FS.seccion}; font-weight:800; border-bottom:2px solid #132542; padding-bottom:3px; margin:0 0 4px; text-transform:uppercase;">Defectos más frecuentes del proceso</h2>
+          <table style="width:100%; border-collapse:collapse; font-size:${FS.tabla};">${filasDefectos}</table>
+        </div>
+
+        <div style="margin-top:auto; padding-top:20px; border-top:1px solid #E2E8F0; display:flex; justify-content:space-between; align-items:flex-end;">
+          <div style="font-size:${FS.micro}; color:#94A3B8;">
+            El detalle caja por caja se presenta en las páginas siguientes (1 página por caja).
+          </div>
+          <div style="text-align:center; width:190px;">
+            <div style="border-bottom:1px solid #94A3B8; height:28px; margin-bottom:3px;"></div>
+            <div style="font-size:${FS.micro}; font-weight:700; color:#334155;">Inspector de Calidad</div>
+          </div>
+        </div>
+      </div>`;
   }
 
   private static buildSingleBoxPageHTML(

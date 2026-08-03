@@ -21,6 +21,9 @@ interface BoxSamplingScreenProps {
   onGoToSummary: () => void;
 }
 
+// Límite de fotos por caja: protege la cuota de almacenamiento del dispositivo
+const MAX_FOTOS_POR_CAJA = 4;
+
 export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
   process,
   onUpdateProcess,
@@ -113,6 +116,14 @@ export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
   // Foto: comprimir antes de guardar (evita reventar la cuota local)
   const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files || e.target.files.length === 0) return;
+
+    // Tope por caja: sin límite, la cuota del dispositivo se agota sin aviso
+    if (photos.length + e.target.files.length > MAX_FOTOS_POR_CAJA) {
+      showNotification(`Máximo ${MAX_FOTOS_POR_CAJA} fotos por caja (llevas ${photos.length}).`);
+      e.target.value = '';
+      return;
+    }
+
     setIsCompressing(true);
     try {
       const files = Array.from(e.target.files);
@@ -371,7 +382,7 @@ export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
 
         {/* Fotos */}
         <div className="form-group" style={{ marginBottom: '24px' }}>
-          <label className="form-label">Fotografías de la Caja / Frutos ({photos.length})</label>
+          <label className="form-label">Fotografías de la Caja / Frutos ({photos.length}/{MAX_FOTOS_POR_CAJA})</label>
           <div style={{ display: 'flex', gap: '10px', marginBottom: '10px' }}>
             <label className="btn-secondary" style={{ cursor: 'pointer', flex: 1, justifyContent: 'center', opacity: isCompressing ? 0.6 : 1 }}>
               <Camera size={18} color="#34D399" />
