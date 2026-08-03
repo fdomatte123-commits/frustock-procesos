@@ -218,12 +218,19 @@ export interface LecturaPesos {
  */
 function limpiarMarcadoresDeLista(texto: string): string {
   return texto
+    // Líneas de resumen con etiqueta en mayúsculas: "PESOS POR BLOQUE: 1, 6, 13…",
+    // "TOTAL GENERAL: 127", "DUDOSOS: ninguno". Sin esto, los conteos por bloque
+    // (12, 13, 14…) caen dentro del rango de una caja y entran como si fueran pesos.
+    .replace(/^[ \t]*[A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ0-9 ]{2,}:.*$/gm, ' ')
     // Líneas de resumen que agrega una IA: "TOTAL: 24", "Promedio: 17,25".
     // Sin esto el 24 entraría como si fuera el peso de una caja.
     .replace(
       /\b(?:total(?:es)?|cantidad|conteo|suma|promedio|media|m[ií]nimo|m[áa]ximo|rango|n[°º]?\s*de\s*(?:cajas|pesos|datos|registros))\b\s*[:=]?\s*\d+(?:[.,]\d+)?/gi,
       ' '
     )
+    // Encabezados de la planilla: "CALIBRE 48", "Línea 2", "Turno 1", "Fecha 3-07-2026".
+    // Se pega un bloque por calibre, así que el título del bloque viene incluido.
+    .replace(/\b(?:calibre|cal\.?|l[ií]nea|linea|turno|fecha|hora|variedad|productor|especie|categor[ií]a|calidad)\s*[:=]?\s*[\d\-\/]+/gi, ' ')
     // "Caja 12:", "caja 12 =", "N° 12 -", "Nro 12"
     .replace(/\b(?:caja|cajas|box|n[°ºo]|nro\.?|num\.?|item)\s*\d{1,4}\s*[:=\-.)]?/gi, ' ')
     // "1.", "2)", "3 -" al inicio de línea o tras un espacio, seguidos de un número
