@@ -1,4 +1,4 @@
-import { ProcessData, calcularEstadisticasPeso, calcularEstadisticasGrupo, getCategoriaLabel } from '../types/process';
+import { ProcessData, calcularEstadisticasPeso, calcularEstadisticasGrupo, getCategoriaLabel, promedioBrix } from '../types/process';
 import { AuditLog, SessionService, LogEvent } from './session';
 
 /**
@@ -64,6 +64,8 @@ export const BackupService = {
         cajasAprobadas: process.boxes.filter(b => b.status === 'APROBADA').length,
         cajasObjetadas: process.boxes.filter(b => b.status === 'OBJETADA').length,
         madurez: (process.maturity || []).map(m => `${m.label}: ${m.value}${m.unit} (${m.ok ? 'cumple' : 'fuera'})`).join(' | '),
+        brixPromedio: promedioBrix(process.boxes)?.promedio ?? '',
+        brixCajasMedidas: promedioBrix(process.boxes)?.medidas ?? 0,
         pesosTotal: stats?.total ?? '',
         pesoPromedio: stats ? Number(stats.promedio.toFixed(3)) : '',
         pesosFueraRango: stats ? stats.bajoRango + stats.sobreRango : '',
@@ -93,6 +95,7 @@ export const BackupService = {
         diametro: b.diameterMm || '',
         peso: b.weightGr || '',
         color: b.colorName ? `${b.colorGrade} - ${b.colorName}` : '',
+        brix: b.brix ?? '',
         totalFrutos: b.totalFrutos ?? '',
         estado: b.status,
         motivos: (b.statusReasons || []).join(' | '),

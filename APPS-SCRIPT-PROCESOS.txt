@@ -49,13 +49,14 @@ const COLS_PROCESO = [
   "Folio", "N° Proceso", "Especie", "Variedad", "Categoría", "Productor", "Cód. Productor",
   "CSG", "SDP", "Lote", "Fecha Recepción", "Kg Totales", "Inspector", "Veredicto",
   "Nota Veredicto", "Cajas Total", "Aprobadas", "Objetadas", "Madurez",
+  "Brix Promedio", "Brix Cajas Medidas",
   "Pesos Total", "Peso Promedio", "Peso Neto Promedio", "Tara", "Neto Objetivo",
   "Pesos Fuera Rango", "Rango Peso", "Pesos por Calibre", "Creado", "Actualizado"
 ];
 
 const COLS_CAJA = [
   "Folio", "N° Proceso", "Caja", "Serie Etiqueta", "Calibre", "Rótulo", "Programa",
-  "Diámetro", "Peso", "Color", "Total Frutos", "Estado", "Motivos", "Defectos",
+  "Diámetro", "Peso", "Color", "Brix", "Total Frutos", "Estado", "Motivos", "Defectos",
   "N° Fotos", "Observaciones", "Inspector", "Registrado", "Editado"
 ];
 
@@ -105,6 +106,7 @@ function doPost(e) {
         p.folio, p.numero, p.especie, p.variedad, p.categoria, p.productor, p.codigoProductor,
         p.csg, p.sdp, p.lote, p.fechaRecepcion, p.kgTotales, p.inspector, p.veredicto,
         p.notaVeredicto, p.cajasTotal, p.cajasAprobadas, p.cajasObjetadas, p.madurez,
+        p.brixPromedio, p.brixCajasMedidas,
         p.pesosTotal, p.pesoPromedio, p.pesoNetoPromedio, p.taraKg, p.netoObjetivoKg,
         p.pesosFueraRango, p.pesoRango, p.pesosPorCalibre, p.creadoEn, p.actualizadoEn
       ];
@@ -135,7 +137,7 @@ function doPost(e) {
 
       const filas = payload.cajas.map(c => [
         c.folio, c.numeroProceso, c.caja, c.serie, c.calibre, c.rotulo, c.programa,
-        c.diametro, c.peso, c.color, c.totalFrutos, c.estado, c.motivos, c.defectos,
+        c.diametro, c.peso, c.color, c.brix, c.totalFrutos, c.estado, c.motivos, c.defectos,
         c.fotos, c.observaciones, c.inspector, c.registrado, c.editado
       ]);
       hoja.getRange(hoja.getLastRow() + 1, 1, filas.length, COLS_CAJA.length).setValues(filas);

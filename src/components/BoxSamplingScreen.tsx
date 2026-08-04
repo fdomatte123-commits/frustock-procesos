@@ -74,6 +74,8 @@ export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
 
   const [selectedCaliberIndex, setSelectedCaliberIndex] = useState<number>(0);
   const [selectedColorGrade, setSelectedColorGrade] = useState<number | string>(1);
+  // Grados Brix: texto para poder dejarlo vacío cuando no se mide
+  const [brix, setBrix] = useState<string>('');
   const [photos, setPhotos] = useState<string[]>([]);
   const [defects, setDefects] = useState<DefectItem[]>([]);
   const [selectedDefectIndex, setSelectedDefectIndex] = useState<number>(0);
@@ -403,6 +405,9 @@ export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
     const calObj = calibers[selectedCaliberIndex];
     if (!calObj) return;
     const colorObj = colorScale.find(c => c.grade === selectedColorGrade);
+    // Vacío o inválido queda como undefined: la caja simplemente no tiene medición
+    const brixParseado = parseFloat(brix.replace(',', '.'));
+    const brixNum = Number.isFinite(brixParseado) && brixParseado > 0 ? brixParseado : undefined;
 
     const newBox: BoxSampling = {
       id: crypto.randomUUID(),
@@ -414,6 +419,7 @@ export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
       weightGr: `${calObj.weightGr} gr`,
       colorGrade: selectedColorGrade,
       colorName: colorObj?.name,
+      brix: brixNum,
       serie: etiqueta?.boxSerial,
       qrPayload: etiqueta ? { ...etiqueta } : undefined,
       totalFrutos: totalValido ? totalFrutosNum : undefined,
@@ -465,6 +471,7 @@ export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
       setDefectValue('');
       setTotalEditado(false);   // la caja siguiente vuelve a seguir al calibre
       setEtiqueta(null);        // cada caja lleva su propia etiqueta
+      setBrix('');              // el Brix se mide caja por caja
     }
   };
 
@@ -479,6 +486,7 @@ export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
     setNotes(b.notes || '');
     setDefectValue('');
     setEtiqueta((b.qrPayload as QRPackingPayload | undefined) ?? null);
+    setBrix(b.brix != null ? String(b.brix) : '');
     // El total guardado manda: así los porcentajes de la caja no cambian al editarla
     if (b.totalFrutos != null) {
       setTotalFrutos(String(b.totalFrutos));
@@ -499,6 +507,7 @@ export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
     setDefectValue('');
     setTotalEditado(false);   // la caja siguiente vuelve a seguir al calibre
     setEtiqueta(null);        // cada caja lleva su propia etiqueta
+    setBrix('');             // el Brix se mide caja por caja
     showNotification('Edición cancelada.');
   };
 
@@ -723,6 +732,33 @@ export const BoxSamplingScreen: React.FC<BoxSamplingScreenProps> = ({
                 </div>
               </div>
             ))}
+          </div>
+        </div>
+
+        {/* Grados Brix (opcional: no se mide en todas las cajas) */}
+        <div className="form-group" style={{ marginBottom: '24px' }}>
+          <label className="form-label">Grados Brix</label>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginTop: '6px' }}>
+            <div style={{ position: 'relative', width: '130px' }}>
+              <input
+                type="text"
+                className="form-input"
+                value={brix}
+                onChange={e => setBrix(e.target.value.replace(/[^0-9.,]/g, ''))}
+                inputMode="decimal"
+                placeholder="—"
+                autoComplete="off"
+                style={{ textAlign: 'center', fontWeight: 700, fontSize: '1.1rem', paddingRight: '34px' }}
+              />
+              <span style={{
+                position: 'absolute', right: '12px', top: '50%', transform: 'translateY(-50%)',
+                fontSize: '0.8rem', color: '#64748B', pointerEvents: 'none'
+              }}>°Bx</span>
+            </div>
+            <div style={{ fontSize: '0.75rem', color: '#94A3B8', flex: 1 }}>
+              Opcional. Si no lo mides en esta caja, déjalo vacío: queda con un guion
+              en el informe y no entra en el promedio del proceso.
+            </div>
           </div>
         </div>
 

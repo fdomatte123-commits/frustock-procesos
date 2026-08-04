@@ -170,6 +170,25 @@ export function calcularEstadisticasGrupo(
   return { ...base, caliber: g.caliber, line: g.line, rangoMin: min, rangoMax: max, pesoFruto };
 }
 
+/**
+ * Promedio de grados Brix de las cajas que sí tienen medición.
+ * Devuelve null cuando no se midió en ninguna, para poder mostrar un guion
+ * en vez de un cero que se leería como "Brix 0".
+ */
+export function promedioBrix(boxes: BoxSampling[] | undefined): { promedio: number; medidas: number } | null {
+  const valores = (boxes ?? [])
+    .map(b => b.brix)
+    .filter((v): v is number => typeof v === 'number' && Number.isFinite(v) && v > 0);
+  if (valores.length === 0) return null;
+  const suma = valores.reduce((a, b) => a + b, 0);
+  return { promedio: Math.round((suma / valores.length) * 10) / 10, medidas: valores.length };
+}
+
+/** Formatea un Brix para mostrarlo; guion cuando no hay medición */
+export function formatearBrix(v: number | null | undefined): string {
+  return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v.toFixed(1) : '—';
+}
+
 /** Todos los pesos de todos los grupos, en una sola lista */
 export function pesosPlanos(grupos: WeightGroup[] | undefined): number[] {
   return (grupos ?? []).flatMap(g => g.weights);
@@ -331,6 +350,11 @@ export interface BoxSampling {
   weightGr?: string;
   colorGrade?: number | string;
   colorName?: string;
+  /**
+   * Grados Brix medidos en la caja. Es opcional: no se mide en todas las cajas,
+   * y las que no tienen medición quedan fuera del promedio del informe.
+   */
+  brix?: number;
   /** Frutos evaluados en la caja: base del cálculo de porcentajes */
   totalFrutos?: number;
   status: BoxStatus;

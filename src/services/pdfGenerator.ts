@@ -1,5 +1,5 @@
 import type jsPDFType from 'jspdf';
-import { ProcessData, getTolerance, getCategoriaLabel, calcularEstadisticasPeso, calcularEstadisticasGrupo } from '../types/process';
+import { ProcessData, getTolerance, getCategoriaLabel, calcularEstadisticasPeso, calcularEstadisticasGrupo, promedioBrix, formatearBrix } from '../types/process';
 import { LOGO_FRUSTOCK_PNG, LOGO_RATIO } from '../assets/logoFrustock';
 
 // jsPDF y html2canvas pesan ~600 kB y solo se usan al exportar.
@@ -285,6 +285,8 @@ export class PDFReportGenerator {
     const total = boxes.length;
     const aprobadas = boxes.filter(b => b.status === 'APROBADA').length;
     const objetadas = total - aprobadas;
+    // Solo promedia las cajas donde sí se midió; null si no se midió en ninguna
+    const brixProm = promedioBrix(boxes);
     const pctAprob = total > 0 ? (aprobadas / total) * 100 : 0;
     const pctObj = 100 - pctAprob;
 
@@ -476,7 +478,7 @@ export class PDFReportGenerator {
           </div>
         </div>
 
-        <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin-bottom:16px;">
+        <div style="display:grid; grid-template-columns:repeat(5,1fr); gap:10px; margin-bottom:16px;">
           <div style="background:#F8FAFC; border:1px solid #E2E8F0; border-radius:8px; padding:10px; text-align:center;">
             <div style="font-size:${FS.micro}; color:#64748B; font-weight:700;">CAJAS EVALUADAS</div>
             <div style="font-size:22px; font-weight:800;">${total}</div>
@@ -488,6 +490,11 @@ export class PDFReportGenerator {
           <div style="background:#FEF2F2; border:1px solid #FCA5A5; border-radius:8px; padding:10px; text-align:center;">
             <div style="font-size:${FS.micro}; color:#991B1B; font-weight:700;">OBJETADAS</div>
             <div style="font-size:22px; font-weight:800; color:#DC2626;">${objetadas}</div>
+          </div>
+          <div style="background:#FFFBEB; border:1px solid #FDE68A; border-radius:8px; padding:10px; text-align:center;">
+            <div style="font-size:${FS.micro}; color:#92400E; font-weight:700;">BRIX PROMEDIO</div>
+            <div style="font-size:22px; font-weight:800; color:${brixProm ? '#D97706' : '#94A3B8'};">${brixProm ? brixProm.promedio.toFixed(1) : '—'}</div>
+            <div style="font-size:${FS.micro}; color:#A16207;">${brixProm ? `${brixProm.medidas} de ${total} cajas` : 'sin medición'}</div>
           </div>
           <div style="background:#F8FAFC; border:1px solid #E2E8F0; border-radius:8px; padding:10px; text-align:center;">
             <div style="font-size:${FS.micro}; color:#64748B; font-weight:700;">CATEGORÍA</div>
@@ -640,6 +647,7 @@ export class PDFReportGenerator {
                   ${box.serie
                     ? `<span style="font-size: 12px; color: #065F46; background: #ECFDF5; padding: 2px 8px; border-radius: 4px; font-weight: 700;">Etiqueta ${esc(box.serie)}</span>`
                     : ''}
+                  <span style="font-size: 12px; color: ${box.brix ? '#92400E' : '#94A3B8'}; background: ${box.brix ? '#FFFBEB' : '#F1F5F9'}; padding: 2px 8px; border-radius: 4px; font-weight: 700;">Brix ${formatearBrix(box.brix)}</span>
                 </div>
               </div>
               <div style="background: ${statusBg}; border: 1.5px solid ${statusBorder}; color: ${statusColor}; font-size: 15px; font-weight: 800; padding: 6px 18px; border-radius: 20px; text-transform: uppercase;">CAJA ${box.status}</div>
