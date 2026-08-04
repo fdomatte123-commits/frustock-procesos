@@ -61,6 +61,80 @@ export class PDFReportGenerator {
       </div>`;
   }
 
+  // -------------------------------------------------------------
+  // FOTOGRAFÍAS
+  // -------------------------------------------------------------
+  /**
+   * Mide el ancho y alto reales de una foto.
+   *
+   * Hace falta porque html2canvas NO implementa object-fit: si se le da a la
+   * imagen un alto y un ancho que no corresponden a su proporción, la estira
+   * para llenar la caja en vez de recortarla. La única forma de que salga sin
+   * deformar es calcular nosotros las dimensiones exactas.
+   */
+  private static medirImagen(src: string): Promise<{ w: number; h: number }> {
+    return new Promise(resolve => {
+      const img = new Image();
+      img.onload = () => resolve({ w: img.naturalWidth || 4, h: img.naturalHeight || 3 });
+      img.onerror = () => resolve({ w: 4, h: 3 });   // proporción típica de teléfono
+      img.src = src;
+    });
+  }
+
+  /** Mide todas las fotos del proceso antes de empezar a dibujar páginas */
+  private static async medirFotos(process: ProcessData): Promise<Map<string, { w: number; h: number }>> {
+    const mapa = new Map<string, { w: number; h: number }>();
+    const todas = (process.boxes || []).flatMap(b => b.photos || []);
+    for (const src of todas) {
+      if (mapa.has(src)) continue;
+      mapa.set(src, await this.medirImagen(src));
+    }
+    return mapa;
+  }
+
+  /**
+   * Bloque de evidencia fotográfica.
+   * Cada foto se escala para caber entera dentro de su recuadro conservando su
+   * proporción, y se centra con márgenes calculados en píxeles: nada depende de
+   * object-fit, flexbox ni márgenes automáticos, que html2canvas no respeta.
+   */
+  private static bloqueFotosHTML(
+    fotos: string[] | undefined,
+    medidas: Map<string, { w: number; h: number }>
+  ): string {
+    if (!fotos || fotos.length === 0) {
+      return `<div style="width: 100%; height: 110px; border: 2px dashed #CBD5E1; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: #94A3B8; font-size: 12px;">Sin registro fotográfico en esta caja</div>`;
+    }
+
+    const ANCHO_UTIL = 734;                       // 794 de página menos 30+30 de margen
+    const GAP = 12;
+    const columnas = fotos.length === 1 ? 1 : 2;
+    const anchoCelda = Math.floor((ANCHO_UTIL - GAP * (columnas - 1)) / columnas);
+    // Con menos fotos se les da más alto: son la evidencia del informe
+    const altoCelda = fotos.length === 1 ? 360 : fotos.length === 2 ? 300 : 250;
+
+    // Se usa inline-block con márgenes fijos en vez de flexbox: html2canvas
+    // resuelve el flujo en línea de forma consistente, el flex no siempre.
+    // El borde se descuenta del área útil para que la fila no se pase del ancho.
+    const BORDE = 1;
+    const utilW = anchoCelda - BORDE * 2;
+    const utilH = altoCelda - BORDE * 2;
+
+    const celdas = fotos.map((src, i) => {
+      const m = medidas.get(src) ?? { w: 4, h: 3 };
+      const escala = Math.min(utilW / m.w, utilH / m.h);
+      const w = Math.max(1, Math.round(m.w * escala));
+      const h = Math.max(1, Math.round(m.h * escala));
+      const top = Math.round((utilH - h) / 2);
+      const left = Math.round((utilW - w) / 2);
+      const ultimaDeFila = columnas === 1 || i % columnas === columnas - 1;
+      return `<div style="display:inline-block; vertical-align:top; box-sizing:border-box; width:${anchoCelda}px; height:${altoCelda}px; margin:0 ${ultimaDeFila ? 0 : GAP}px ${GAP}px 0; border-radius:8px; overflow:hidden; border:${BORDE}px solid #E2E8F0; background:#F1F5F9;"><img src="${src}" width="${w}" height="${h}" style="display:block; width:${w}px; height:${h}px; margin:${top}px 0 0 ${left}px;" alt="Foto ${i + 1}" /></div>`;
+    }).join('');
+
+    // font-size 0 elimina el espacio en blanco entre los inline-block
+    return `<div style="font-size:0; line-height:0;">${celdas}</div>`;
+  }
+
   /**
    * Precarga la marca una sola vez.
    * html2canvas captura el DOM tal como está: si la imagen todavía no decodifica,
@@ -90,8 +164,9 @@ export class PDFReportGenerator {
 
     // Descarga de las librerías pesadas solo cuando realmente se exporta
     if (onProgress) onProgress(1);
-    const [{ jsPDF, html2canvas }] = await Promise.all([
+    const [{ jsPDF, html2canvas }, medidasFotos] = await Promise.all([
       cargarLibreriasPDF(),
+      this.medirFotos(process),
       this.precargarLogo()
     ]);
 
@@ -106,9 +181,11 @@ export class PDFReportGenerator {
     const pageW = 210;
     const pageH = 297;
 
-    // En móvil bajamos la escala: con 20 cajas a scale 2 la pestaña se queda sin memoria
+    // En móvil se baja la escala porque con muchas cajas a scale 2 la pestaña se
+    // queda sin memoria. Con pocas cajas sí alcanza, y las fotos se ven bastante
+    // más nítidas, que es donde se aprecia el detalle de la fruta.
     const esMovil = typeof window !== 'undefined' && window.innerWidth <= 768;
-    const escala = esMovil ? 1.5 : 2;
+    const escala = esMovil ? (process.boxes.length <= 8 ? 2 : 1.5) : 2;
 
     // Renderiza un bloque HTML y lo agrega como página, liberando memoria después
     const agregarPagina = async (html: string, esPrimera: boolean) => {
@@ -123,7 +200,9 @@ export class PDFReportGenerator {
         width: 794
       });
 
-      const imgData = canvas.toDataURL('image/jpeg', 0.88);
+      // 0.92 en vez de 0.88: el JPEG se nota sobre todo en las fotos de fruta,
+      // y el peso extra en una página de texto es despreciable.
+      const imgData = canvas.toDataURL('image/jpeg', 0.92);
 
       if (!esPrimera) doc.addPage('a4', 'portrait');
 
@@ -152,7 +231,7 @@ export class PDFReportGenerator {
       for (let index = 0; index < totalBoxes; index++) {
         const box = process.boxes[index];
         if (onProgress) onProgress(Math.round(((index + 1) / totalBoxes) * 95) + 4);
-        await agregarPagina(this.buildSingleBoxPageHTML(process, box, index + 1, totalBoxes), false);
+        await agregarPagina(this.buildSingleBoxPageHTML(process, box, index + 1, totalBoxes, medidasFotos), false);
       }
 
       // Numeración estampada sobre el PDF ya generado (fiable ante cualquier corte)
@@ -457,7 +536,8 @@ export class PDFReportGenerator {
     process: ProcessData,
     box: typeof process.boxes[0],
     pageIndex: number,
-    totalPages: number
+    totalPages: number,
+    medidasFotos: Map<string, { w: number; h: number }>
   ): string {
     const especie = (process.species || 'Naranja').toUpperCase();
     const isApproved = box.status === 'APROBADA';
@@ -495,12 +575,7 @@ export class PDFReportGenerator {
         }).join('')
       : `<tr><td colspan="4" style="padding: 16px; text-align: center; color: #059669; font-weight: 600; background: #F0FDF4;">✓ Sin defectos registrados en este muestreo</td></tr>`;
 
-    const photosHTML = box.photos && box.photos.length > 0
-      ? box.photos.map((src, i) => `
-          <div style="flex: 1; min-width: 45%; max-width: 50%; height: 180px; border-radius: 8px; overflow: hidden; border: 1px solid #E2E8F0; background: #F8FAFC;">
-            <img src="${src}" style="width: 100%; height: 100%; object-fit: cover;" alt="Foto ${i + 1}" />
-          </div>`).join('')
-      : `<div style="width: 100%; height: 110px; border: 2px dashed #CBD5E1; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: #94A3B8; font-size: 12px;">Sin registro fotográfico en esta caja</div>`;
+    const photosHTML = this.bloqueFotosHTML(box.photos, medidasFotos);
 
     const statusReasonsHTML = box.statusReasons && box.statusReasons.length > 0
       ? `<div style="background: #FEF2F2; border: 1px solid #FCA5A5; border-radius: 6px; padding: 8px 12px; margin-top: 8px; font-size: 11px; color: #991B1B;">
@@ -577,7 +652,7 @@ export class PDFReportGenerator {
 
           <div>
             <div style="font-size: 11px; font-weight: 700; color: #475569; margin-bottom: 6px; text-transform: uppercase;">Evidencia Fotográfica de la Caja</div>
-            <div style="display: flex; gap: 12px; flex-wrap: wrap;">${photosHTML}</div>
+            ${photosHTML}
           </div>
         </div>
 
