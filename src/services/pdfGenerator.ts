@@ -94,45 +94,61 @@ export class PDFReportGenerator {
 
   /**
    * Bloque de evidencia fotográfica.
-   * Cada foto se escala para caber entera dentro de su recuadro conservando su
-   * proporción, y se centra con márgenes calculados en píxeles: nada depende de
-   * object-fit, flexbox ni márgenes automáticos, que html2canvas no respeta.
+   *
+   * La imagen se dimensiona en píxeles conservando su proporción y ES ella misma
+   * el elemento visible: no va dentro de ningún recuadro.
+   *
+   * Esto es deliberado. Un contenedor con overflow:hidden y border-radius hace
+   * que html2canvas calcule mal la región de recorte y borre la imagen hija por
+   * completo — la caja se dibuja y la foto desaparece. Tampoco se usa object-fit
+   * (html2canvas lo ignora y estira la foto) ni flexbox. La maquetación va en
+   * una tabla, que es lo que html2canvas resuelve de forma fiable.
    */
   private static bloqueFotosHTML(
     fotos: string[] | undefined,
     medidas: Map<string, { w: number; h: number }>
   ): string {
     if (!fotos || fotos.length === 0) {
-      return `<div style="width: 100%; height: 110px; border: 2px dashed #CBD5E1; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: #94A3B8; font-size: 12px;">Sin registro fotográfico en esta caja</div>`;
+      return `<div style="width:100%; padding:26px 0; border:2px dashed #CBD5E1; text-align:center; color:#94A3B8; font-size:12px;">Sin registro fotográfico en esta caja</div>`;
     }
 
-    const ANCHO_UTIL = 734;                       // 794 de página menos 30+30 de margen
+    const ANCHO_UTIL = 734;                        // 794 de página menos 30+30 de margen
     const GAP = 12;
+    const BORDE = 1;
     const columnas = fotos.length === 1 ? 1 : 2;
     const anchoCelda = Math.floor((ANCHO_UTIL - GAP * (columnas - 1)) / columnas);
     // Con menos fotos se les da más alto: son la evidencia del informe
-    const altoCelda = fotos.length === 1 ? 360 : fotos.length === 2 ? 300 : 250;
+    const altoMax = fotos.length === 1 ? 360 : fotos.length === 2 ? 300 : 250;
+    const maxW = anchoCelda - BORDE * 2;
+    const maxH = altoMax - BORDE * 2;
 
-    // Se usa inline-block con márgenes fijos en vez de flexbox: html2canvas
-    // resuelve el flujo en línea de forma consistente, el flex no siempre.
-    // El borde se descuenta del área útil para que la fila no se pase del ancho.
-    const BORDE = 1;
-    const utilW = anchoCelda - BORDE * 2;
-    const utilH = altoCelda - BORDE * 2;
-
-    const celdas = fotos.map((src, i) => {
-      const m = medidas.get(src) ?? { w: 4, h: 3 };
-      const escala = Math.min(utilW / m.w, utilH / m.h);
+    const celda = (src: string, i: number) => {
+      const bruta = medidas.get(src);
+      // Una medida en cero o inválida daría width="NaN" y la foto no se dibujaría:
+      // ante la duda se asume 4:3, la proporción típica de la cámara del teléfono.
+      const m = (bruta && bruta.w > 0 && bruta.h > 0 && Number.isFinite(bruta.w) && Number.isFinite(bruta.h))
+        ? bruta
+        : { w: 4, h: 3 };
+      const escala = Math.min(maxW / m.w, maxH / m.h);
       const w = Math.max(1, Math.round(m.w * escala));
       const h = Math.max(1, Math.round(m.h * escala));
-      const top = Math.round((utilH - h) / 2);
-      const left = Math.round((utilW - w) / 2);
-      const ultimaDeFila = columnas === 1 || i % columnas === columnas - 1;
-      return `<div style="display:inline-block; vertical-align:top; box-sizing:border-box; width:${anchoCelda}px; height:${altoCelda}px; margin:0 ${ultimaDeFila ? 0 : GAP}px ${GAP}px 0; border-radius:8px; overflow:hidden; border:${BORDE}px solid #E2E8F0; background:#F1F5F9;"><img src="${src}" width="${w}" height="${h}" style="display:block; width:${w}px; height:${h}px; margin:${top}px 0 0 ${left}px;" alt="Foto ${i + 1}" /></div>`;
-    }).join('');
+      const derecha = i % columnas === columnas - 1 ? 0 : GAP;
+      return `<td style="width:${anchoCelda}px; padding:0 ${derecha}px ${GAP}px 0; vertical-align:top; text-align:left;"><img src="${src}" width="${w}" height="${h}" style="display:block; width:${w}px; height:${h}px; border:${BORDE}px solid #E2E8F0;" alt="Foto ${i + 1}" /></td>`;
+    };
 
-    // font-size 0 elimina el espacio en blanco entre los inline-block
-    return `<div style="font-size:0; line-height:0;">${celdas}</div>`;
+    // Filas de hasta `columnas` fotos; la última se completa con celdas vacías
+    const filas: string[] = [];
+    for (let i = 0; i < fotos.length; i += columnas) {
+      const grupo = fotos.slice(i, i + columnas);
+      const celdas = grupo.map((src, j) => celda(src, j)).join('');
+      const faltan = columnas - grupo.length;
+      const vacias = faltan > 0
+        ? `<td style="width:${anchoCelda}px; padding:0;"></td>`.repeat(faltan)
+        : '';
+      filas.push(`<tr>${celdas}${vacias}</tr>`);
+    }
+
+    return `<table style="width:${ANCHO_UTIL}px; border-collapse:collapse; table-layout:fixed;">${filas.join('')}</table>`;
   }
 
   /**
