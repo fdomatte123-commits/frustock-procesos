@@ -3,7 +3,8 @@ import { Scale, ClipboardPaste, Trash2, Check, AlertTriangle, Plus, Package } fr
 import {
   ProcessData, WeightControl, WeightGroup,
   parsearPesosDetallado, calcularEstadisticasPeso, calcularEstadisticasGrupo,
-  rangoPesoCalibre, pesosPlanos, getCalibers,
+  rangoPesoCalibre, pesosPlanos, getCalibers, diagnosticarPesos,
+  ordenarGruposPorGravedad, CALIBRE_SIN_ASIGNAR,
   NETO_OBJETIVO_DEFECTO, TARA_DEFECTO
 } from '../types/process';
 import { ProcessStorageService } from '../services/storage';
@@ -56,12 +57,13 @@ export const WeightControlScreen: React.FC<Props> = ({ process, onUpdateProcess 
 
   // ---------------- Grupos ----------------
 
+  // El bloque arranca SIN calibre. Traer uno por defecto hacía fácil pegar todo
+  // el turno bajo un calibre equivocado sin notarlo, y el rango máximo depende
+  // del calibre: el informe entero sale mal medido.
   const agregarGrupo = () => {
-    const usados = new Set(grupos.map(g => `${g.caliber}|${g.line ?? ''}`));
-    const libre = calibresDisponibles.find(c => !usados.has(`${c.caliber}|`));
     setGrupos(prev => [...prev, {
       id: crypto.randomUUID(),
-      caliber: libre?.caliber ?? calibresDisponibles[0]?.caliber ?? '',
+      caliber: CALIBRE_SIN_ASIGNAR,
       weights: []
     }]);
   };
@@ -76,6 +78,10 @@ export const WeightControlScreen: React.FC<Props> = ({ process, onUpdateProcess 
   };
 
   const agregarPesos = (g: WeightGroup) => {
+    if (!g.caliber) {
+      avisar('Elige el calibre de este bloque antes de agregar los pesos.');
+      return;
+    }
     const rango = rangoPesoCalibre(process.species, g.caliber, netoNum, taraNum);
     const lectura = parsearPesosDetallado(textos[g.id] ?? '', { minKg: rango.min, maxKg: rango.max });
     if (lectura.pesos.length === 0) {
@@ -103,6 +109,11 @@ export const WeightControlScreen: React.FC<Props> = ({ process, onUpdateProcess 
 
   const statsPorGrupo = useMemo(
     () => grupos.map(g => calcularEstadisticasGrupo(g, process.species, netoNum, taraNum)),
+    [grupos, process.species, netoNum, taraNum]
+  );
+
+  const diagnostico = useMemo(
+    () => diagnosticarPesos(grupos, process.species, netoNum, taraNum),
     [grupos, process.species, netoNum, taraNum]
   );
 
@@ -253,7 +264,8 @@ export const WeightControlScreen: React.FC<Props> = ({ process, onUpdateProcess 
                   value={g.caliber}
                   onChange={e => actualizarGrupo(g.id, { caliber: e.target.value })}
                 >
-                  {!calibresDisponibles.some(c => c.caliber === g.caliber) && (
+                  <option value="">Elegir…</option>
+                  {g.caliber !== '' && !calibresDisponibles.some(c => c.caliber === g.caliber) && (
                     <option value={g.caliber}>{g.caliber}</option>
                   )}
                   {calibresDisponibles.map(c => (
@@ -318,6 +330,45 @@ export const WeightControlScreen: React.FC<Props> = ({ process, onUpdateProcess 
             {/* Resultados del bloque */}
             {s.total > 0 && (
               <>
+                {/* Barra: dónde caen los pesos respecto del rango aceptable.
+                    El eje va de min-40% a max+40% de la ventana, así se ve
+                    cuánto se sale un bloque sin recortar los extremos. */}
+                {(() => {
+                  const ventana = s.rangoMax - s.rangoMin;
+                  const ejeMin = s.rangoMin - ventana * 0.4;
+                  const ejeMax = s.rangoMax + ventana * 0.4;
+                  const pos = (v: number) => Math.max(0, Math.min(100, ((v - ejeMin) / (ejeMax - ejeMin)) * 100));
+                  return (
+                    <div style={{ margin: '4px 0 10px' }}>
+                      <div style={{ position: 'relative', height: '30px', background: '#1E293B', borderRadius: '6px', overflow: 'hidden' }}>
+                        {/* zona aceptable */}
+                        <div style={{
+                          position: 'absolute', left: `${pos(s.rangoMin)}%`, width: `${pos(s.rangoMax) - pos(s.rangoMin)}%`,
+                          top: 0, bottom: 0, background: 'rgba(16,185,129,0.18)', borderLeft: '2px solid #059669', borderRight: '2px solid #059669'
+                        }} />
+                        {/* cada caja */}
+                        {g.weights.map((p, k) => {
+                          const fuera = p < s.rangoMin || p > s.rangoMax;
+                          return <div key={k} style={{
+                            position: 'absolute', left: `${pos(p)}%`, top: '5px', width: '2px', height: '20px',
+                            background: fuera ? '#F87171' : '#34D399', opacity: 0.8, transform: 'translateX(-1px)'
+                          }} />;
+                        })}
+                        {/* promedio del bloque */}
+                        <div style={{
+                          position: 'absolute', left: `${pos(s.promedio)}%`, top: 0, bottom: 0, width: '2px',
+                          background: '#FBBF24', transform: 'translateX(-1px)'
+                        }} />
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.62rem', color: '#64748B', marginTop: '2px' }}>
+                        <span>{ejeMin.toFixed(2)}</span>
+                        <span style={{ color: '#FBBF24' }}>▲ promedio {s.promedio.toFixed(3)}</span>
+                        <span>{ejeMax.toFixed(2)}</span>
+                      </div>
+                    </div>
+                  );
+                })()}
+
                 <div style={{ display: 'flex', gap: '14px', flexWrap: 'wrap', fontSize: '0.75rem', color: '#94A3B8', marginBottom: '8px' }}>
                   <span><strong style={{ color: 'white' }}>{s.total}</strong> cajas</span>
                   <span>prom. <strong style={{ color: 'white' }}>{s.promedio.toFixed(3)}</strong> kg</span>
@@ -381,6 +432,37 @@ export const WeightControlScreen: React.FC<Props> = ({ process, onUpdateProcess 
             </div>
           </div>
 
+          {/* Exceso y riesgo, en gramos y cajas */}
+          <div className="grid-2" style={{ marginBottom: '12px', gap: '10px' }}>
+            <div style={{ background: '#0F172A', border: '1px solid #334155', borderRadius: '10px', padding: '11px 14px' }}>
+              <div style={{ fontSize: '0.7rem', color: '#94A3B8', fontWeight: 700, textTransform: 'uppercase' }}>
+                Exceso sobre el máximo
+              </div>
+              <div style={{ fontSize: '1.35rem', fontWeight: 800, color: diagnostico.excesoPorCajaGr > 60 ? '#FBBF24' : '#34D399' }}>
+                {diagnostico.excesoPorCajaGr} g <span style={{ fontSize: '0.75rem', fontWeight: 600, color: '#64748B' }}>por caja</span>
+              </div>
+              <div style={{ fontSize: '0.68rem', color: '#64748B', marginTop: '2px' }}>
+                {diagnostico.excesoKg.toFixed(2)} kg en total · no cuenta el margen de deshidratación
+              </div>
+            </div>
+            <div style={{
+              background: '#0F172A', borderRadius: '10px', padding: '11px 14px',
+              border: `1px solid ${diagnostico.cajasBajoMinimo > 0 ? '#EF4444' : '#334155'}`
+            }}>
+              <div style={{ fontSize: '0.7rem', color: '#94A3B8', fontWeight: 700, textTransform: 'uppercase' }}>
+                Riesgo de llegar bajo etiqueta
+              </div>
+              <div style={{ fontSize: '1.35rem', fontWeight: 800, color: diagnostico.cajasBajoMinimo > 0 ? '#F87171' : '#34D399' }}>
+                {diagnostico.cajasBajoMinimo} <span style={{ fontSize: '0.75rem', fontWeight: 600, color: '#64748B' }}>de {diagnostico.totalCajas} cajas</span>
+              </div>
+              <div style={{ fontSize: '0.68rem', color: '#64748B', marginTop: '2px' }}>
+                {diagnostico.cajasBajoMinimo > 0
+                  ? `${diagnostico.pctBajoMinimo}% del turno · les faltan ${diagnostico.faltanteMedioGr} g en promedio`
+                  : 'ninguna caja bajo el mínimo de embalaje'}
+              </div>
+            </div>
+          </div>
+
           {criticos.length > 0 && (
             <div style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid #EF4444', borderRadius: '10px', padding: '12px 14px', marginBottom: '14px' }}>
               <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '6px' }}>
@@ -390,14 +472,16 @@ export const WeightControlScreen: React.FC<Props> = ({ process, onUpdateProcess 
                 </span>
               </div>
               <ul style={{ margin: '0 0 0 20px', padding: 0, fontSize: '0.8rem', color: '#FCA5A5' }}>
-                {criticos.map((c, i) => (
-                  <li key={i} style={{ marginBottom: '2px' }}>
-                    Calibre {c.caliber}{c.line ? ` línea ${c.line}` : ''}: {c.pctConforme.toFixed(0)}% conforme
-                    {c.bajoRango > c.sobreRango
-                      ? ` — ${c.bajoRango} cajas bajo el mínimo (está llenando poco)`
-                      : ` — ${c.sobreRango} cajas sobre el máximo (está regalando fruta)`}
-                  </li>
-                ))}
+                {[...criticos]
+                  .sort((a, b) => (b.bajoRango + b.sobreRango) - (a.bajoRango + a.sobreRango))
+                  .map((c, i) => (
+                    <li key={i} style={{ marginBottom: '2px' }}>
+                      Calibre {c.caliber}{c.line ? ` línea ${c.line}` : ''}: {c.pctConforme.toFixed(0)}% conforme
+                      {c.bajoRango > c.sobreRango
+                        ? ` — ${c.bajoRango} cajas bajo el mínimo (está llenando poco)`
+                        : ` — ${c.sobreRango} cajas sobre el máximo (está llenando de más)`}
+                    </li>
+                  ))}
               </ul>
             </div>
           )}

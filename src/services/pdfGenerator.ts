@@ -1,5 +1,5 @@
 import type jsPDFType from 'jspdf';
-import { ProcessData, getTolerance, getCategoriaLabel, calcularEstadisticasPeso, calcularEstadisticasGrupo, promedioBrix, formatearBrix } from '../types/process';
+import { ProcessData, getTolerance, getCategoriaLabel, calcularEstadisticasPeso, calcularEstadisticasGrupo, promedioBrix, formatearBrix, diagnosticarPesos, ordenarGruposPorGravedad } from '../types/process';
 import { LOGO_FRUSTOCK_PNG, LOGO_RATIO } from '../assets/logoFrustock';
 
 // jsPDF y html2canvas pesan ~600 kB y solo se usan al exportar.
@@ -348,9 +348,13 @@ export class PDFReportGenerator {
     const wc = process.weightControl;
     const ws = wc ? calcularEstadisticasPeso(wc) : null;
     const tara = wc?.taraKg ?? 0;
-    const statsGrupos = (wc?.grupos ?? []).map(g =>
+    // Primero el calibre que hay que ir a revisar, no el orden de carga
+    const gruposOrdenados = ordenarGruposPorGravedad(
+      wc?.grupos ?? [], process.species, wc?.netoObjetivoKg, wc?.taraKg);
+    const statsGrupos = gruposOrdenados.map(g =>
       calcularEstadisticasGrupo(g, process.species, wc?.netoObjetivoKg, wc?.taraKg));
     const criticos = statsGrupos.filter(s => s.total >= 3 && s.pctConforme < 70);
+    const diag = diagnosticarPesos(wc?.grupos, process.species, wc?.netoObjetivoKg, wc?.taraKg);
 
     const filasPeso = statsGrupos.map(s => {
       const alerta = s.total >= 3 && s.pctConforme < 70;
@@ -378,8 +382,16 @@ export class PDFReportGenerator {
         <div style="display:grid; grid-template-columns:repeat(5,1fr); gap:8px; text-align:center; margin-bottom:8px;">
           <div><div style="font-size:${FS.micro}; color:#64748B;">Cajas pesadas</div><div style="font-size:${FS.subtitulo}; font-weight:800;">${ws.total}</div></div>
           <div><div style="font-size:${FS.micro}; color:#64748B;">Neto promedio</div><div style="font-size:${FS.subtitulo}; font-weight:800;">${(ws.promedio - tara).toFixed(3)}</div></div>
-          <div><div style="font-size:${FS.micro}; color:#64748B;">Bruto mínimo</div><div style="font-size:${FS.subtitulo}; font-weight:800;">${ws.min.toFixed(3)}</div></div>
-          <div><div style="font-size:${FS.micro}; color:#64748B;">Bruto máximo</div><div style="font-size:${FS.subtitulo}; font-weight:800;">${ws.max.toFixed(3)}</div></div>
+          <div>
+            <div style="font-size:${FS.micro}; color:#64748B;">Bajo el mínimo</div>
+            <div style="font-size:${FS.subtitulo}; font-weight:800; color:${diag.cajasBajoMinimo > 0 ? '#DC2626' : '#059669'};">${diag.cajasBajoMinimo} caja(s)</div>
+            <div style="font-size:${FS.micro}; color:#94A3B8;">${diag.cajasBajoMinimo > 0 ? `faltan ${diag.faltanteMedioGr} g` : 'ninguna'}</div>
+          </div>
+          <div>
+            <div style="font-size:${FS.micro}; color:#64748B;">Exceso sobre máx.</div>
+            <div style="font-size:${FS.subtitulo}; font-weight:800; color:${diag.excesoPorCajaGr > 60 ? '#D97706' : '#059669'};">${diag.excesoPorCajaGr} g</div>
+            <div style="font-size:${FS.micro}; color:#94A3B8;">por caja</div>
+          </div>
           <div>
             <div style="font-size:${FS.micro}; color:#64748B;">Conforme</div>
             <div style="font-size:${FS.subtitulo}; font-weight:800; color:${ws.pctConforme >= 90 ? '#059669' : '#DC2626'};">${ws.pctConforme.toFixed(1)}%</div>

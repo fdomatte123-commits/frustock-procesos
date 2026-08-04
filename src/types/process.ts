@@ -194,6 +194,77 @@ export function pesosPlanos(grupos: WeightGroup[] | undefined): number[] {
   return (grupos ?? []).flatMap(g => g.weights);
 }
 
+/** Un bloque sin calibre asignado todavía */
+export const CALIBRE_SIN_ASIGNAR = '';
+
+/**
+ * Diagnóstico del control de pesos del turno.
+ *
+ * El exceso se mide SOBRE EL MÁXIMO, no sobre el mínimo: los gramos de más que
+ * lleva cada caja son deliberados —compensan la deshidratación en tránsito— y
+ * contarlos como desperdicio daría una cifra falsa y alarmante. Solo cuenta lo
+ * que supera el techo, que es lo que no se explica ni por ese margen ni por la
+ * granularidad de un fruto.
+ */
+export interface DiagnosticoPesos {
+  /** Kilos por encima del máximo, sumando todas las cajas */
+  excesoKg: number;
+  excesoPorCajaGr: number;
+  /** Cajas que no alcanzan el mínimo de embalaje */
+  cajasBajoMinimo: number;
+  pctBajoMinimo: number;
+  /** Gramos que le faltan en promedio a las cajas bajo el mínimo */
+  faltanteMedioGr: number;
+  totalCajas: number;
+}
+
+export function diagnosticarPesos(
+  grupos: WeightGroup[] | undefined,
+  species: Species,
+  netoObjetivoKg = NETO_OBJETIVO_DEFECTO,
+  taraKg = TARA_DEFECTO
+): DiagnosticoPesos {
+  let excesoKg = 0, cajasBajoMinimo = 0, faltanteKg = 0, totalCajas = 0;
+
+  for (const g of grupos ?? []) {
+    const { min, max } = rangoPesoCalibre(species, g.caliber, netoObjetivoKg, taraKg);
+    for (const p of g.weights) {
+      if (!Number.isFinite(p) || p <= 0) continue;
+      totalCajas++;
+      if (p > max) excesoKg += p - max;
+      if (p < min) { cajasBajoMinimo++; faltanteKg += min - p; }
+    }
+  }
+
+  return {
+    excesoKg: Math.round(excesoKg * 100) / 100,
+    excesoPorCajaGr: totalCajas > 0 ? Math.round((excesoKg / totalCajas) * 1000) : 0,
+    cajasBajoMinimo,
+    pctBajoMinimo: totalCajas > 0 ? Math.round((cajasBajoMinimo / totalCajas) * 1000) / 10 : 0,
+    faltanteMedioGr: cajasBajoMinimo > 0 ? Math.round((faltanteKg / cajasBajoMinimo) * 1000) : 0,
+    totalCajas
+  };
+}
+
+/**
+ * Ordena los bloques dejando primero el que hay que ir a revisar.
+ * Prioriza por cajas fuera de rango; a igualdad, por el bloque más grande,
+ * porque un problema en 14 cajas pesa más que el mismo problema en 2.
+ */
+export function ordenarGruposPorGravedad(
+  grupos: WeightGroup[],
+  species: Species,
+  netoObjetivoKg = NETO_OBJETIVO_DEFECTO,
+  taraKg = TARA_DEFECTO
+): WeightGroup[] {
+  const puntaje = (g: WeightGroup) => {
+    const s = calcularEstadisticasGrupo(g, species, netoObjetivoKg, taraKg);
+    if (s.total === 0) return -1;                      // los vacíos al final
+    return (s.bajoRango + s.sobreRango) * 1000 + s.total;
+  };
+  return [...grupos].sort((a, b) => puntaje(b) - puntaje(a));
+}
+
 export function calcularEstadisticasPeso(w: WeightControl): WeightStats {
   const pesos = w.weights.filter(p => Number.isFinite(p) && p > 0);
   const total = pesos.length;
